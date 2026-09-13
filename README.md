@@ -17,8 +17,8 @@
 
 ## 界面预览
 
-V1.0.3
-<img width="1173" height="979" alt="iShot_2026-09-12_21 57 44" src="https://github.com/user-attachments/assets/f4775f75-ab0b-4a52-9127-5f4443d7ab6f" />
+V1.0.5
+<img width="1210" height="1064" alt="image" src="https://github.com/user-attachments/assets/bf33c342-8a95-43e3-b576-8811c24102a4" />
 
 V1.0.0
 
