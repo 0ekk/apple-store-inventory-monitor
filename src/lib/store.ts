@@ -484,3 +484,24 @@ export async function openReleasePage(): Promise<void> {
     update({ updateError: `无法打开下载页：${String(err)}` });
   }
 }
+
+async function openCommunityPage(url: string, label: string): Promise<void> {
+  try {
+    await openUrl(url);
+  } catch (err) {
+    pushLog(`打开${label}失败：${String(err)}`);
+  }
+}
+
+/** 打开开源仓库主页，可从 Releases 下载最新版。 */
+export function openProjectPage(): Promise<void> {
+  return openCommunityPage(
+    "https://github.com/suversal/apple-store-inventory-monitor",
+    "GitHub 项目页",
+  );
+}
+
+/** 打开作者的 X 主页。 */
+export function openAuthorPage(): Promise<void> {
+  return openCommunityPage("https://x.com/suversal", "X 主页");
+}

@@ -67,6 +67,8 @@ import {
   connect,
   dismissUpdate,
   installUpdate,
+  openAuthorPage,
+  openProjectPage,
   openReleasePage,
   openTargetProduct,
   refreshProducts,
@@ -95,6 +97,22 @@ import {
 
 import { describeMonitorStatus } from "@/lib/monitorLog";
 import { compareNewestProducts, sortMonitorsNewestFirst } from "@/lib/productOrder";
+
+function GithubBrandIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path fillRule="evenodd" d="M12 2C6.477 2 2 6.589 2 12.253c0 4.53 2.865 8.374 6.839 9.731.5.094.682-.222.682-.494 0-.244-.009-.888-.014-1.744-2.782.62-3.369-1.374-3.369-1.374-.455-1.184-1.11-1.499-1.11-1.499-.908-.636.069-.623.069-.623 1.004.073 1.532 1.057 1.532 1.057.892 1.568 2.341 1.115 2.91.853.091-.663.349-1.115.635-1.371-2.221-.259-4.555-1.14-4.555-5.067 0-1.119.389-2.034 1.029-2.751-.103-.26-.446-1.302.098-2.713 0 0 .84-.276 2.75 1.051A9.33 9.33 0 0 1 12 7.992a9.31 9.31 0 0 1 2.504.346c1.909-1.327 2.748-1.051 2.748-1.051.545 1.411.202 2.453.1 2.713.64.717 1.027 1.632 1.027 2.751 0 3.937-2.337 4.805-4.565 5.059.359.317.679.944.679 1.903 0 1.374-.012 2.482-.012 2.819 0 .275.18.593.688.493C19.14 20.625 22 16.783 22 12.253 22 6.589 17.523 2 12 2Z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
+function XBrandIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231 5.45-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" />
+    </svg>
+  );
+}
 
 const TONE_CLASS: Record<StatusTone, string> = {
   inStock: "bg-in-stock/12 text-in-stock border-in-stock/25",
@@ -365,6 +383,41 @@ export default function App() {
                   Apple 直营店取货库存监控
                 </p>
               </div>
+            </div>
+
+            <div className="hidden min-w-0 flex-1 items-center justify-center gap-2 min-[860px]:flex">
+              <span className="truncate text-sm text-muted-foreground">
+                本软件已开源，欢迎下载最新版体验
+              </span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="rounded-lg"
+                    aria-label="在 GitHub 查看开源项目并下载最新版"
+                    onClick={() => void openProjectPage()}
+                  >
+                    <GithubBrandIcon />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>GitHub 项目与最新版下载</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="rounded-lg px-2 text-sm text-muted-foreground hover:text-foreground"
+                    aria-label="在 X 关注 @suversal，获取更多信息"
+                    onClick={() => void openAuthorPage()}
+                  >
+                    <XBrandIcon />
+                    @suversal
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>关注我获取更多信息</TooltipContent>
+              </Tooltip>
             </div>
 
             <div className="flex shrink-0 items-center gap-2.5">
