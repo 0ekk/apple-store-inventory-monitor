@@ -18,10 +18,9 @@
 ## 界面预览
 
 V1.0.5
-<img width="1210" height="1064" alt="image" src="https://github.com/user-attachments/assets/bf33c342-8a95-43e3-b576-8811c24102a4" />
+<img width="1210" height="1064" alt="iShot_2026-09-13_13 28 44" src="https://github.com/user-attachments/assets/8e5be95d-d5f4-418b-ba99-81f6ce81b728" />
 
 V1.0.0
-
 ![果到雷达：Apple 直营店取货库存监控，展示不同库存状态及提醒设置](docs/screenshots/monitor.png)
 
 截图中的 Bark 密钥已遮挡；库存仅代表拍摄时结果。截图来自更新前的本地版本，日志中的旧提醒记录不代表当前版本提供系统通知。当前提醒方式为提示音、Bark 和可选的页面跳转。
