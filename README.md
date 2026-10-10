@@ -17,11 +17,8 @@
 
 ## 界面预览
 
-V1.0.6
-<img width="1711" height="1195" alt="image" src="https://github.com/user-attachments/assets/889e8ea4-c842-4a11-917b-5832596ae781" />
-
-V1.0.5
-<img width="1210" height="1064" alt="iShot_2026-09-13_13 28 44" src="https://github.com/user-attachments/assets/8e5be95d-d5f4-418b-ba99-81f6ce81b728" />
+V1.0.19
+<img width="1649" height="1133" alt="image" src="https://github.com/user-attachments/assets/14e23bd5-aff4-4fa5-a8ac-c6dc5beb7fde" />
 
 V1.0.0
 ![果到雷达：Apple 直营店取货库存监控，展示不同库存状态及提醒设置](docs/screenshots/monitor.png)
