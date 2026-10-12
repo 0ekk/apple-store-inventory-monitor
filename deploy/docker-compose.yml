@@ -1,0 +1,42 @@
+# Headless deployment: one persistent Camoufox browser session (sidecar)
+# plus the watcher/notifier binary with its web UI (monitor). Run from the
+# repo root:
+#   docker compose -f deploy/docker-compose.yml up --build -d
+#
+# Settings live on the host at ./data/settings.v2.json (same JSON shape the
+# desktop app writes). Set APW_WEB_PASSWORD (e.g. in deploy/.env) to turn on
+# the web UI at http://127.0.0.1:8080 - see ../docs/headless-deploy.md.
+services:
+  sidecar:
+    build: ../camoufox-sidecar
+    restart: unless-stopped
+    # Not published to the host: only `monitor` needs to reach it, over the
+    # compose-internal network.
+    expose:
+      - "8787"
+    shm_size: "1gb"
+    environment:
+      # Optional exit proxy for Apple traffic (http://[user:pass@]host:port),
+      # for when Apple blocks the server's IP with HTTP 541. Empty = direct.
+      SIDECAR_PROXY: ${SIDECAR_PROXY:-}
+
+  monitor:
+    build:
+      context: ..
+      dockerfile: crates/apw-headless/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - sidecar
+    environment:
+      CAMOUFOX_SIDECAR_URL: http://sidecar:8787
+      APW_SETTINGS_PATH: /data/settings.v2.json
+      # Empty = web UI off.
+      APW_WEB_PASSWORD: ${APW_WEB_PASSWORD:-}
+      APW_WEB_ADDR: 0.0.0.0:8080
+    # Host loopback only. From another machine use an SSH tunnel
+    # (ssh -L 8080:127.0.0.1:8080 your-vps); don't publish this on a public
+    # interface - it is plain HTTP with Basic auth.
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/data

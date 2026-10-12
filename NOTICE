@@ -135,6 +135,24 @@ https://github.com/ENCHIGO/apple-pickup-watcher/graphs/contributors 查看。
      com.suversal.apple-store-inventory-monitor。新包使用独立配置目录，并在首次
      启动时只读迁移 apple-pickup-watcher 的现有设置。
 
+ 15. Added a headless deployment target driven by Camoufox (2026-09-14).
+     New workspace member `crates/apw-headless` and `camoufox-sidecar/`
+     (a Python/Playwright process) let this run on a plain Linux server
+     instead of the Tauri desktop app. `crates/apw-core` is reused
+     unmodified: the only addition is a new `Fetcher` implementation that
+     delegates the browser session Apple's bot-check requires to the
+     Camoufox sidecar over a local HTTP call, instead of driving an
+     in-process Chromium session over CDP the way the desktop app's
+     `AppleChromiumFetcher` does. Desktop-only alert channels (local sound,
+     auto-opening a browser tab) have no server equivalent and are dropped;
+     the Bark push channel is reused as-is. See
+     `docs/plan/2026-09-14-camoufox-headless-port.md` and
+     `docs/headless-deploy.md` for the full rationale and deployment guide.
+     Since 2026-10-12 the headless binary also serves the unmodified desktop
+     frontend (`src/`) as a password-protected web UI: the web build swaps
+     the Tauri API modules for an HTTP shim (`crates/apw-headless/web/`).
+     See `docs/plan/2026-10-12-headless-web-ui.md`.
+
 
 --------------------------------------------------------------------------------
 本项目的许可
@@ -191,6 +209,7 @@ Rust 侧：
     rand                       MIT OR Apache-2.0
     rodio                      MIT OR Apache-2.0
     dirs                       MIT OR Apache-2.0
+    axum / tower-http          MIT        (crates/apw-headless only)
 
 前端侧：
 

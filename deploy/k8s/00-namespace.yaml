@@ -1,0 +1,12 @@
+# Enforces the Pod Security Standards "restricted" profile at admission time.
+# Both containers in 10-apw.yaml are written to comply with it (non-root,
+# no privilege escalation, all capabilities dropped); see that file for the
+# one documented defense-in-depth exception (readOnlyRootFilesystem).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apw-monitor
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

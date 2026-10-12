@@ -1,0 +1,58 @@
+# Default posture: deny everything, then explicitly allow only what the pod
+# needs. Monitor -> sidecar traffic stays on the pod's loopback interface, so
+# no rule is needed for it, and nothing ever connects *into* this pod.
+#
+# These only take effect if the cluster's CNI enforces NetworkPolicy. The
+# sidecar's isolation does not depend on that: it binds 127.0.0.1 only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: apw-monitor
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# DNS, plus HTTPS out to the public internet: the sidecar reaches Apple's
+# site, the monitor reaches the user's Bark push endpoint directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: apw-monitor-egress
+  namespace: apw-monitor
+spec:
+  podSelector:
+    matchLabels:
+      app: apw-monitor
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    # If you set the optional apw-proxy Secret (see 10-apw.yaml), allow the
+    # proxy too: private addresses and ports other than 443 are denied above.
+    # - to:
+    #     - ipBlock:
+    #         cidr: 192.168.1.10/32   # your proxy's IP
+    #   ports:
+    #     - protocol: TCP
+    #       port: 7890                # your proxy's port

@@ -1,0 +1,4 @@
+# ponytail: geoip extra only matters if you add a proxy later (it derives
+# locale/geolocation from the proxy's exit IP). Skipped for the plain
+# no-proxy setup; add camoufox[geoip] if you wire one in.
+camoufox==0.5.6

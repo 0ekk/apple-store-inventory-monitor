@@ -1,0 +1,215 @@
+# Prerequisite -- create the web UI password Secret before applying this file:
+#
+#   kubectl create secret generic apw-web \
+#     --namespace apw-monitor \
+#     --from-literal=password="$(openssl rand -base64 24)"
+#
+# Settings (targets, Bark device key) live on the apw-data volume below and
+# are edited in the web UI: kubectl port-forward deploy/apw-monitor 8080:8080,
+# then http://127.0.0.1:8080 (user "admin"). See docs/headless-deploy.md.
+#
+# One pod, two containers: the Camoufox browser runs as a native sidecar
+# (an init container with restartPolicy: Always) and the monitor talks to it
+# over 127.0.0.1. Requires Kubernetes 1.29+ (sidecar containers beta and on
+# by default; GA in 1.33).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: apw-data
+  namespace: apw-monitor
+  labels:
+    app.kubernetes.io/part-of: apple-store-inventory-monitor
+spec:
+  # Single writer: replicas is 1 and the strategy is Recreate, so the old pod
+  # releases the volume before the new one mounts it.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # settings.v2.json is a few KiB; the refreshed catalog cache is a few
+      # MiB per region.
+      storage: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apw-monitor
+  namespace: apw-monitor
+  labels:
+    app: apw-monitor
+    app.kubernetes.io/part-of: apple-store-inventory-monitor
+spec:
+  # Exactly one replica, always. The browser session and the watcher's
+  # target state both live only in this pod's memory; a second replica would
+  # be a second independent Apple session polling the same targets -- the
+  # request-burst pattern Apple's bot-check exists to catch.
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    # Never RollingUpdate: that briefly runs the old and new pod together,
+    # i.e. two browser sessions at once.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: apw-monitor
+  template:
+    metadata:
+      labels:
+        app: apw-monitor
+        app.kubernetes.io/part-of: apple-store-inventory-monitor
+    spec:
+      automountServiceAccountToken: false
+      # Shared by the whole pod. On SIGTERM the monitor's watcher.stop() lets
+      # the in-flight poll cycle finish, which can take up to the sidecar
+      # call's 65s timeout (SIDECAR_TIMEOUT_SECS in camoufox_fetcher.rs);
+      # the sidecar is only signalled after the monitor exits and then needs
+      # a few seconds to close the browser.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Native sidecar: starts first, and the monitor container is not
+        # started until this container's startupProbe passes; on shutdown it
+        # is stopped only after the monitor has exited.
+        - name: sidecar
+          restartPolicy: Always
+          # CI publishes ghcr.io/<owner>/apw-camoufox-sidecar:sha-<short sha>
+          # for every commit on main (.github/workflows/images.yml), or build
+          # camoufox-sidecar/Dockerfile yourself. Replace this placeholder
+          # with an immutable tag or digest (never :latest).
+          image: REGISTRY/apw-camoufox-sidecar:REPLACE_WITH_TAG
+          imagePullPolicy: IfNotPresent
+          env:
+            # Loopback only: nothing outside this pod can reach the browser
+            # session, regardless of whether the CNI enforces NetworkPolicy.
+            # (The image defaults to 0.0.0.0 for the compose setup.)
+            - name: SIDECAR_HOST
+              value: "127.0.0.1"
+            - name: SIDECAR_PORT
+              value: "8787"
+            # Optional exit proxy for Apple traffic, for when Apple blocks
+            # the node's IP (HTTP 541). No Secret = direct connection. To use
+            # one, create the Secret, allow its address in
+            # 01-networkpolicy.yaml, then restart the pod:
+            #   kubectl -n apw-monitor create secret generic apw-proxy \
+            #     --from-literal=url='http://[user:pass@]host:port'
+            - name: SIDECAR_PROXY
+              valueFrom:
+                secretKeyRef:
+                  name: apw-proxy
+                  key: url
+                  optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            # DEVIATION from readOnlyRootFilesystem: true. Camoufox/Firefox
+            # writes its own cache and per-launch profile data to several
+            # internal paths under $HOME that aren't practical to enumerate
+            # and mount individually without testing against the real
+            # browser (not possible in the environment this was authored in
+            # -- see docs/plan/2026-09-14-camoufox-headless-port.md).
+            # Upgrade path: run it once, watch for EROFS/ENOENT writes, mount
+            # exactly those paths as emptyDir, then flip this to true.
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            # Browsers need real shared memory; the runtime's default
+            # /dev/shm (64Mi) is too small. Must be an emptyDir with medium
+            # Memory, not disk-backed.
+            - name: dshm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              # One Firefox plus one open Apple page per region. 1536Mi was
+              # OOM-killed with three regions loading pages at once; page
+              # loads are serialized now, and this leaves headroom for more
+              # regions.
+              memory: 2560Mi
+              # No CPU limit: avoids CFS throttling latency spikes.
+          # exec probes, not httpGet: the server is bound to 127.0.0.1, and
+          # kubelet's httpGet probes connect to the pod IP. curl is already
+          # in the image.
+          startupProbe:
+            exec:
+              command: ["curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8787/healthz"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 24 # 120s budget for a cold browser launch
+          livenessProbe:
+            # Only checks the sidecar's own event loop -- never Apple's site,
+            # so an Apple outage can't trigger a restart loop.
+            exec:
+              command: ["curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8787/healthz"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+      containers:
+        - name: monitor
+          # CI publishes ghcr.io/<owner>/apw-monitor:sha-<short sha> for
+          # every commit on main (.github/workflows/images.yml), or build
+          # crates/apw-headless/Dockerfile yourself (context = repo root).
+          # Replace this placeholder with an immutable tag or digest (never
+          # :latest).
+          image: REGISTRY/apw-monitor:REPLACE_WITH_TAG
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CAMOUFOX_SIDECAR_URL
+              value: "http://127.0.0.1:8787"
+            # A subdirectory, not the volume root: the monitor tightens its
+            # config directory to 0700 like the desktop app does, which only
+            # works on a directory it created (the root belongs to kubelet).
+            - name: APW_SETTINGS_PATH
+              value: "/data/config/settings.v2.json"
+            # Loopback only, same as the sidecar: reachable through
+            # kubectl port-forward, never from the pod network. No Service.
+            - name: APW_WEB_ADDR
+              value: "127.0.0.1:8080"
+            - name: APW_WEB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: apw-web
+                  key: password
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              # Measured on kind: 19Mi peak including a web UI catalog
+              # refresh (one category's product pages). Headroom for bigger
+              # categories and several open UI tabs.
+              memory: 128Mi
+          # No probes: nothing routes traffic to this pod, so there is no
+          # "traffic before ready" failure mode to guard against, and the
+          # web server needs Basic auth that kubelet probes can't send. A
+          # hang shows up as stale [cycle N] log lines.
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+        - name: data
+          persistentVolumeClaim:
+            claimName: apw-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

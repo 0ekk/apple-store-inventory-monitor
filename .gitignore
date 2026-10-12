@@ -29,3 +29,10 @@ pnpm-debug.log*
 
 # 生成快照的脚本留下的字节码缓存
 __pycache__/
+
+# Headless deployment data: the user's settings.v2.json (Bark device key,
+# monitor list) bind-mounted into the container. Never commit this.
+/deploy/data/
+/deploy/.env
+# Headless web UI build output (crates/apw-headless/web/vite.config.ts).
+/crates/apw-headless/web/dist/

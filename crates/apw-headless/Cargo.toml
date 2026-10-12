@@ -1,0 +1,26 @@
+[package]
+name = "apw-headless"
+description = "Headless CLI shell for apw-core: runs the watcher against a Camoufox sidecar instead of the Tauri desktop app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "apw-headless"
+path = "src/main.rs"
+
+[dependencies]
+apw-core = { path = "../apw-core" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Web management UI. hyper/tower/tower-http/base64/subtle/futures-util are
+# already in the lockfile through reqwest and Tauri; axum is the one new crate.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tower-http = { version = "0.6", features = ["fs"] }
+futures-util = { version = "0.3", default-features = false }
+base64 = "0.22"
+subtle = "2.6"

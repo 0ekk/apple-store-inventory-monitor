@@ -1,0 +1,9 @@
+# Applies to builds whose context is the repo root
+# (crates/apw-headless/Dockerfile). Keeps multi-GB build output and local
+# installs out of the context.
+.git
+target
+node_modules
+**/node_modules
+crates/apw-headless/web/dist
+deploy/data
