@@ -74,6 +74,9 @@ commit a pullable, pinnable image without anyone building locally.
 
 ## Addendum: linux/arm64 (2026-10-12)
 
+Superseded the same day by "one buildx build per image" below; kept
+because commit a35a2af shipped it.
+
 ### Rationale
 
 The images have to run on arm64 nodes too, not only amd64.
@@ -125,5 +128,85 @@ The images have to run on arm64 nodes too, not only amd64.
 - A local emulated arm64 build of the sidecar was attempted and failed
   before running any Dockerfile step (`exec /bin/sh: no such file or
   directory`). The cause is this workstation's QEMU binfmt setup, not the
-  Dockerfile, so it says nothing about the image. The arm64 path is
-  verified by the first native CI run.
+  Dockerfile, so it says nothing about the image.
+- CI run 38234171720 (commit a35a2af): all four builds and the merge job
+  green (sidecar about 4m15s per arch, monitor 2m42s arm64 / 2m59s amd64,
+  merge 10s). The anonymous manifest for `sha-a35a2af` lists
+  `linux/amd64` and `linux/arm64` (plus the two provenance attestation
+  entries, `unknown/unknown`) for both images. The arm64 sidecar job's log
+  shows `camoufox fetch` downloading the `lin.arm64` browser build.
+
+## Addendum: one buildx build per image (2026-10-12)
+
+### Rationale
+
+The native-runner layout needed five jobs, a merge step, and two extra
+single-arch tags per commit, and nobody could reproduce a multi-arch build
+locally with one command. Asked to use buildx's own multi-platform build
+instead.
+
+### Decisions
+
+- **One job per image, `platforms: linux/amd64,linux/arm64`.** buildx
+  builds both architectures and pushes one multi-arch `sha-<short sha>`
+  index. There are no per-arch tags, no merge job, and no
+  `DOCKER_METADATA_SHORT_SHA_LENGTH` coupling. Runner: `ubuntu-24.04`, plus
+  `docker/setup-qemu-action@v4` limited to `arm64`.
+- **The monitor cross-compiles instead of emulating rustc.** In
+  `crates/apw-headless/Dockerfile` the `web` and `build` stages are
+  `FROM --platform=$BUILDPLATFORM`, so they always run on the runner's own
+  architecture. The bundle is plain JS. The Rust stage uses
+  `tonistiigi/xx:1.9.0`:
+  - `xx-cargo` sets the target triple, the clang/lld cross linker, the C
+    compiler for `ring`, and the target-aware pkg-config for `alsa-sys`.
+  - `xx-apt-get` installs `xx-c-essentials` and `libasound2-dev` for the
+    target architecture.
+  - `xx-verify` fails the build if the binary is the wrong architecture.
+
+  Only the runtime stage (`useradd`, `COPY`) runs as the target
+  architecture.
+- **pkg-config is pointed at the target by hand.** `xx-cargo` only sets
+  `PKG_CONFIG` when a `<triple>-pkg-config` wrapper exists, and Debian
+  trixie ships none (no `pkg-config-aarch64-linux-gnu` package). The first
+  local arm64 build failed in `alsa-sys`'s build script ("pkg-config has
+  not been configured to support cross-compilation"). The build step now
+  exports `PKG_CONFIG_ALLOW_CROSS=1` and
+  `PKG_CONFIG_LIBDIR=/usr/lib/$(xx-info)/pkgconfig:/usr/share/pkgconfig`,
+  the multiarch directory where `xx-apt-get` installs the target's
+  `alsa.pc`. For a native build the same path is the build machine's own.
+- **The sidecar Dockerfile is unchanged and its arm64 build runs under
+  QEMU.** apt packages, the Playwright wheel and the Camoufox browser all
+  have to be the arm64 ones, so there's no build-machine stage to move them
+  into. This is the slow part of the arm64 build: emulated `dpkg` plus a
+  browser download and unzip in emulated Python.
+- **Cache scope back to one per image.** A multi-platform build stores both
+  architectures under one scope.
+- **`timeout-minutes: 45`** (was 30): headroom for the emulated sidecar
+  build on a cold cache.
+
+### Impact
+
+- Each push to `main` costs two jobs again.
+- The sidecar's arm64 half is slower than on a native runner (emulation).
+  The monitor's isn't, because rustc never runs under QEMU.
+- `docker buildx build --platform linux/amd64,linux/arm64` reproduces the
+  CI build locally, given QEMU binfmt for arm64.
+- New build-time dependency: the `tonistiigi/xx:1.9.0` image (Docker's own
+  cross-compilation helpers), pinned by tag like the other base images.
+- Tags pushed by a35a2af's run (`sha-a35a2af-amd64` / `-arm64`) stay in
+  the registry. Nothing produces new per-arch tags.
+
+### Verification
+
+- `actionlint` 1.7.7 reports no findings for the single-build workflow.
+- Local cross-compile on an amd64 workstation, without QEMU:
+  `docker buildx build --platform linux/arm64 --target build` produced an
+  `ELF 64-bit ... ARM aarch64` binary, and `xx-verify` passed. `readelf -d`
+  shows the same NEEDED set as the native build (libgcc_s, libm, libc; no
+  libasound).
+- Local full amd64 build (`--platform linux/amd64`, the xx path with target
+  equal to the build machine): the image starts and logs
+  `web UI listening`; `/` returns 401 without credentials and 200 with them.
+- Not run locally: the arm64 runtime stage and the arm64 sidecar build. Both
+  need QEMU, and this workstation's binfmt setup is broken (see the previous
+  addendum). The first CI run on `main` covers them.

@@ -12,23 +12,15 @@ permissions:
   contents: read
   packages: write
 
-env:
-  # Read by metadata-action and by the merge step, so both agree on the tag.
-  DOCKER_METADATA_SHORT_SHA_LENGTH: 7
-
 jobs:
-  # One job per image and architecture, each on a native runner: the Rust
-  # release build under QEMU emulation takes several times longer.
-  build:
-    name: ${{ matrix.image }} (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+  image:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     strategy:
-      # One build failing must not cancel the others.
+      # One image failing must not cancel the other one's build.
       fail-fast: false
       matrix:
-        image: [apw-monitor, apw-camoufox-sidecar]
-        arch: [amd64, arm64]
         include:
           - image: apw-monitor
             context: .
@@ -36,15 +28,19 @@ jobs:
           - image: apw-camoufox-sidecar
             context: camoufox-sidecar
             dockerfile: camoufox-sidecar/Dockerfile
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            # GitHub's arm64 runners are free in public repositories.
-            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
 
-      # Buildx is required for the GitHub Actions layer cache below.
+      # One buildx build per image produces both architectures. The
+      # monitor cross-compiles on the runner and only its final stage runs
+      # as arm64; the sidecar installs arm64 packages and the arm64 browser,
+      # so its whole arm64 build runs under QEMU.
+      - uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      # Buildx is required for multi-platform builds and the GitHub Actions
+      # layer cache below.
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
@@ -53,45 +49,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Per-arch tag sha-<short sha>-<arch>; the merge job combines the two.
-      # The OCI labels metadata-action emits (org.opencontainers.image.source)
-      # link the package to this repo.
+      # type=sha gives sha-<7-char sha>. The OCI labels it emits
+      # (org.opencontainers.image.source) link the package to this repo.
       - id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
-          tags: type=sha,suffix=-${{ matrix.arch }}
+          tags: type=sha
 
       - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: linux/${{ matrix.arch }}
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
-          cache-to: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }},mode=max
-
-  # Runs only when all four builds succeeded, so sha-<short sha> never
-  # exists with an architecture missing.
-  merge:
-    name: multi-arch tags
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Combine the per-arch images under sha-<short sha>
-        env:
-          OWNER: ${{ github.repository_owner }}
-        # Same image list as the build matrix above.
-        run: |
-          for image in apw-monitor apw-camoufox-sidecar; do
-            tag="ghcr.io/${OWNER,,}/${image}:sha-${GITHUB_SHA::$DOCKER_METADATA_SHORT_SHA_LENGTH}"
-            docker buildx imagetools create -t "$tag" "$tag-amd64" "$tag-arm64"
-          done
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
