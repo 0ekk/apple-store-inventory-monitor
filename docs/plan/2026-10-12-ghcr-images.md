@@ -35,9 +35,8 @@ commit a pullable, pinnable image without anyone building locally.
 - **Actions pinned by major version** (`@v4`, `@v6`, `@v7`), the same style
   as `ci.yml` and `release.yml`. Versions checked against each action's
   latest release on 2026-10-12.
-- **`linux/amd64` only.** Marked with a `ponytail:` comment in the workflow.
-  arm64 would need QEMU emulation, which makes the Rust build several times
-  slower, and no arm64 node exists yet.
+- **`linux/amd64` only** at first. Superseded the same day; see the
+  addendum below.
 
 ## Impact
 
@@ -61,10 +60,70 @@ commit a pullable, pinnable image without anyone building locally.
 
 - `actionlint` 1.7.7 (`rhysd/actionlint` image) reports no findings for
   `.github/workflows/images.yml`.
-- The workflow has not run yet, because nothing is pushed. First real check
-  is the first push to `main`: both jobs green, and
-  `docker pull ghcr.io/<owner>/apw-monitor:sha-<short sha>` succeeds (after
-  the visibility step above).
+- First run on the fork (0ekk/apple-store-inventory-monitor, run
+  38223520776, commit 6ab7955): both jobs green on a cold cache,
+  apw-camoufox-sidecar in 3m23s and apw-monitor in 3m34s.
+- An anonymous registry request (a token from `ghcr.io/token` with no
+  credentials, then `GET /v2/0ekk/<image>/manifests/sha-6ab7955`) returned
+  200 for both images. On this public fork the packages came out public
+  with no manual visibility step; the docs keep the private-package
+  instructions for other setups.
 - Both Dockerfiles already build locally with the same context and file
   arguments (the kind deployment runs those images: sidecar `dev4`, monitor
   `dev3`).
+
+## Addendum: linux/arm64 (2026-10-12)
+
+### Rationale
+
+The images have to run on arm64 nodes too, not only amd64.
+
+### Decisions
+
+- **Native runners, not QEMU.** Each image is built once per architecture
+  on a runner of that architecture: `ubuntu-24.04` for amd64 and
+  `ubuntu-24.04-arm` for arm64. GitHub's arm64 runners are free in public
+  repositories. Under QEMU emulation the Rust release build of `apw-monitor`
+  takes several times longer. The runners are pinned to 24.04 instead of
+  `ubuntu-latest`, so both architectures build on the same OS release
+  (`ubuntu-latest` moves to Ubuntu 26 from 2026-10-19). The Dockerfiles do
+  all the work inside their own base images, so the runner OS only hosts
+  Docker.
+- **Per-arch tags, then a merge job.** Every build pushes
+  `sha-<short sha>-<arch>`. A `merge` job runs `docker buildx imagetools
+  create` to publish `sha-<short sha>` as one multi-arch index over the two
+  builds. Docker's documented example passes digests between jobs through
+  artifacts (`push-by-digest`). Per-arch tags need no artifact
+  upload/download steps, at the cost of two extra tags per commit in the
+  package's tag list.
+- **The merge job needs all four builds** (`needs: build`), so a
+  `sha-<short sha>` tag never exists with an architecture missing. When one
+  build fails, that commit gets no multi-arch tag, and the per-arch tags
+  that did build stay in the registry.
+- **One short-SHA length.** `DOCKER_METADATA_SHORT_SHA_LENGTH: 7` is set at
+  workflow level. metadata-action reads it for the per-arch tags, and the
+  merge step's `${GITHUB_SHA::$DOCKER_METADATA_SHORT_SHA_LENGTH}` reads the
+  same variable, so the two names can't drift apart. The merge step
+  lowercases the owner (`${OWNER,,}`) because GHCR requires it;
+  metadata-action already does that for the build jobs.
+- **Cache scope per image and architecture**
+  (`scope=<image>-<arch>`), so the two architectures don't overwrite each
+  other's layer cache.
+
+### Impact
+
+- Each push to `main` now costs four build jobs plus one short merge job.
+- Camoufox publishes Linux arm64 browser builds (`lin.arm64.zip` assets on
+  every recent release); `camoufox fetch` is expected to pick it on an
+  arm64 build, which the first CI run confirms or refutes.
+- The k8s manifests don't change: the same `sha-<short sha>` tag resolves
+  to the node's architecture.
+
+### Verification
+
+- `actionlint` 1.7.7 reports no findings for the multi-arch workflow.
+- A local emulated arm64 build of the sidecar was attempted and failed
+  before running any Dockerfile step (`exec /bin/sh: no such file or
+  directory`). The cause is this workstation's QEMU binfmt setup, not the
+  Dockerfile, so it says nothing about the image. The arm64 path is
+  verified by the first native CI run.

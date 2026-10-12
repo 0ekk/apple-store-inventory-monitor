@@ -324,7 +324,12 @@ fork that is the fork's owner. Setup that GitHub doesn't do for you:
   `read:packages`, run
   `kubectl -n apw-monitor create secret docker-registry ghcr --docker-server=ghcr.io --docker-username=<user> --docker-password=<token>`,
   and add `imagePullSecrets: [{name: ghcr}]` to the pod spec.
-- The images are `linux/amd64` only.
+- Each `sha-<short sha>` tag is a multi-arch image (`linux/amd64` and
+  `linux/arm64`), so the same manifest works on either kind of node. The
+  single-arch builds it is made from stay in the registry as
+  `sha-<short sha>-amd64` / `sha-<short sha>-arm64`.
+- The arm64 builds run on GitHub's `ubuntu-24.04-arm` runners, which are
+  free in public repositories.
 
 Notes specific to the Kubernetes path:
 

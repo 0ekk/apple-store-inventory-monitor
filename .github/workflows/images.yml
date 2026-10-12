@@ -1,9 +1,9 @@
 name: Images
 
 # Container images for the headless deployment (docs/headless-deploy.md):
-# every commit on main is built and pushed to GHCR as
-# ghcr.io/<owner>/<image>:sha-<short sha>, an immutable tag the manifests in
-# deploy/k8s/ can pin.
+# every commit on main is built for linux/amd64 and linux/arm64 and pushed
+# to GHCR as ghcr.io/<owner>/<image>:sha-<short sha>, a multi-arch tag the
+# manifests in deploy/k8s/ can pin.
 on:
   push:
     branches: [main]
@@ -12,15 +12,23 @@ permissions:
   contents: read
   packages: write
 
+env:
+  # Read by metadata-action and by the merge step, so both agree on the tag.
+  DOCKER_METADATA_SHORT_SHA_LENGTH: 7
+
 jobs:
-  image:
-    name: ${{ matrix.image }}
-    runs-on: ubuntu-latest
+  # One job per image and architecture, each on a native runner: the Rust
+  # release build under QEMU emulation takes several times longer.
+  build:
+    name: ${{ matrix.image }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
-      # One image failing must not cancel the other one's build.
+      # One build failing must not cancel the others.
       fail-fast: false
       matrix:
+        image: [apw-monitor, apw-camoufox-sidecar]
+        arch: [amd64, arm64]
         include:
           - image: apw-monitor
             context: .
@@ -28,6 +36,11 @@ jobs:
           - image: apw-camoufox-sidecar
             context: camoufox-sidecar
             dockerfile: camoufox-sidecar/Dockerfile
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            # GitHub's arm64 runners are free in public repositories.
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
 
@@ -40,22 +53,45 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # type=sha gives sha-<7-char sha>. The OCI labels it emits
-      # (org.opencontainers.image.source) link the package to this repo.
+      # Per-arch tag sha-<short sha>-<arch>; the merge job combines the two.
+      # The OCI labels metadata-action emits (org.opencontainers.image.source)
+      # link the package to this repo.
       - id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
-          tags: type=sha
+          tags: type=sha,suffix=-${{ matrix.arch }}
 
-      # ponytail: linux/amd64 only; add platforms + setup-qemu-action if an
-      # arm64 node ever needs these images.
       - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }},mode=max
+
+  # Runs only when all four builds succeeded, so sha-<short sha> never
+  # exists with an architecture missing.
+  merge:
+    name: multi-arch tags
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Combine the per-arch images under sha-<short sha>
+        env:
+          OWNER: ${{ github.repository_owner }}
+        # Same image list as the build matrix above.
+        run: |
+          for image in apw-monitor apw-camoufox-sidecar; do
+            tag="ghcr.io/${OWNER,,}/${image}:sha-${GITHUB_SHA::$DOCKER_METADATA_SHORT_SHA_LENGTH}"
+            docker buildx imagetools create -t "$tag" "$tag-amd64" "$tag-arm64"
+          done
