@@ -210,3 +210,10 @@ instead.
 - Not run locally: the arm64 runtime stage and the arm64 sidecar build. Both
   need QEMU, and this workstation's binfmt setup is broken (see the previous
   addendum). The first CI run on `main` covers them.
+- CI run 38235305997 (commit aaf8fc2), cold cache: both jobs green,
+  apw-monitor in 4m10s and apw-camoufox-sidecar in 9m26s (the emulated arm64
+  half; the native-runner layout took about 4m15s). The anonymous manifest
+  for `sha-aaf8fc2` lists `linux/amd64` and `linux/arm64` (plus two
+  attestation entries) for both images. The emulated sidecar build's log
+  shows `camoufox fetch` downloading the `lin.arm64` browser build. The
+  upstream CI workflow on the same commit is green too.
