@@ -258,6 +258,16 @@ impl NetworkSettings {
     }
 }
 
+/// Headless only: Telegram bot alerts next to Bark. Both empty means the
+/// server's `APW_TELEGRAM_BOT_TOKEN`/`APW_TELEGRAM_CHAT_ID`, if set. The
+/// desktop app ignores this.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TelegramSettings {
+    pub bot_token: String,
+    pub chat_id: String,
+}
+
 /// 持久化的用户设置。
 ///
 /// 字段名跨 IPC 边界要和前端对齐，所以统一小驼峰，与 [`Target`]、
@@ -288,6 +298,7 @@ pub struct Settings {
     pub open_on_hit: OpenOnHit,
     /// Apple 查询的出口线路。
     pub network: NetworkSettings,
+    pub telegram: TelegramSettings,
 }
 
 /// 内置地区表里的第一个 locale，作为兜底取值。
@@ -309,6 +320,7 @@ impl Default for Settings {
             sound_enabled: true,
             open_on_hit: OpenOnHit::Bag,
             network: NetworkSettings::default(),
+            telegram: TelegramSettings::default(),
         }
     }
 }
@@ -376,6 +388,8 @@ impl Settings {
         });
 
         self.network.normalize();
+        self.telegram.bot_token = self.telegram.bot_token.trim().to_string();
+        self.telegram.chat_id = self.telegram.chat_id.trim().to_string();
     }
 
     /// 查询间隔。
@@ -797,6 +811,7 @@ impl LegacySettings {
                 None => fallback.open_on_hit,
             },
             network: fallback.network,
+            telegram: fallback.telegram,
         };
         settings.normalize();
         settings

@@ -2,8 +2,8 @@
 //   pnpm exec vite build --config crates/apw-headless/web/vite.config.ts
 // Reuses the desktop config unchanged and only swaps the Tauri modules for
 // tauri-shim.ts, plus the query-route panel for NetworkSettings.tsx (the
-// server rotates exit proxies instead of driving Clash). Other upstream UI
-// changes need no edits here.
+// server rotates exit proxies instead of driving Clash; it also renders the
+// headless Telegram panel). Other upstream UI changes need no edits here.
 import path from "node:path";
 import { defineConfig, mergeConfig, type ConfigEnv } from "vite";
 import desktopConfig from "../../../vite.config";

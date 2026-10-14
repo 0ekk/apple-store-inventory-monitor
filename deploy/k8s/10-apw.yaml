@@ -179,8 +179,9 @@ spec:
                 secretKeyRef:
                   name: apw-web
                   key: password
-            # Optional Telegram alerts next to Bark. No Secret = off. Create
-            # it, then restart the pod (see docs/headless-deploy.md):
+            # Optional Telegram alerts next to Bark, used while the web UI's
+            # Telegram fields are empty (setting them there needs no Secret).
+            # Create it, then restart the pod (see docs/headless-deploy.md):
             #   kubectl -n apw-monitor create secret generic apw-telegram \
             #     --from-literal=token='123456:ABC...' --from-literal=chat-id='-100...'
             - name: APW_TELEGRAM_BOT_TOKEN

@@ -260,6 +260,9 @@ async fn save_settings(app: &AppState, args: &Value) -> Result<Value, String> {
     let mut next: Settings = arg(args, "settings")?;
     next.normalize();
     crate::camoufox_fetcher::validate_proxies(&next.network.proxies)?;
+    if next.telegram.bot_token.is_empty() != next.telegram.chat_id.is_empty() {
+        return Err("set both the Telegram bot token and chat ID, or neither".into());
+    }
     app.hydrate_targets(&mut next.targets);
     app.put_settings(next.clone())?;
     app.watcher.set_targets(next.targets.clone()).await;
@@ -379,10 +382,10 @@ async fn test_notify(app: &AppState) -> Result<Value, String> {
     let bark_url = first.map_or(settings.bark_url.as_str(), |target| {
         settings.bark_url_for(target)
     });
-    if bark_url.trim().is_empty() && !app.telegram.is_configured() {
+    let telegram = app.telegram(&settings);
+    if bark_url.trim().is_empty() && !telegram.is_configured() {
         return Err(
-            "set a Bark URL (or APW_TELEGRAM_BOT_TOKEN and APW_TELEGRAM_CHAT_ID) first: \
-             they are the alert channels in headless mode"
+            "set a Bark URL or a Telegram bot first: they are the alert channels in headless mode"
                 .into(),
         );
     }
@@ -395,7 +398,7 @@ async fn test_notify(app: &AppState) -> Result<Value, String> {
     {
         notification = notification.with_url(url);
     }
-    send_alert(app, bark_url, &notification).await?;
+    send_alert(app, bark_url, telegram, &notification).await?;
     reply(())
 }
 

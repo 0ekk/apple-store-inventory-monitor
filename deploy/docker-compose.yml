@@ -35,7 +35,8 @@ services:
       # Empty = web UI off.
       APW_WEB_PASSWORD: ${APW_WEB_PASSWORD:-}
       APW_WEB_ADDR: 0.0.0.0:8080
-      # Optional Telegram alerts next to Bark; set both or neither.
+      # Optional Telegram alerts next to Bark; set both or neither. Used
+      # while the web UI's Telegram fields are empty.
       APW_TELEGRAM_BOT_TOKEN: ${APW_TELEGRAM_BOT_TOKEN:-}
       APW_TELEGRAM_CHAT_ID: ${APW_TELEGRAM_CHAT_ID:-}
     # Host loopback only. From another machine use an SSH tunnel

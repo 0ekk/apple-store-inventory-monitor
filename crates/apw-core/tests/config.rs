@@ -16,7 +16,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use apw_core::config::{
     ClashSettings, ConfigError, DEFAULT_INTERVAL_SECONDS, MAX_SETTINGS_BYTES, NetworkMode,
-    NetworkSettings, OpenOnHit, Settings, SettingsStore,
+    NetworkSettings, OpenOnHit, Settings, SettingsStore, TelegramSettings,
 };
 use apw_core::model::Target;
 
@@ -110,6 +110,10 @@ fn 样例设置() -> Settings {
                 pinned_node: "DIRECT".into(),
             },
             proxies: vec!["socks5://127.0.0.1:1080".into()],
+        },
+        telegram: TelegramSettings {
+            bot_token: "123456:abc".into(),
+            chat_id: "-10042".into(),
         },
     }
 }
@@ -574,13 +578,18 @@ fn 设置的线上格式是小驼峰() {
         "soundEnabled",
         "openOnHit",
         "network",
+        "telegram",
     ] {
         assert!(obj.contains_key(key), "缺少字段 {key}：{value}");
     }
     assert!(!obj.contains_key("interval_seconds"), "不该有蛇形字段");
     assert_eq!(obj.get("openOnHit"), Some(&serde_json::json!("product")));
     assert!(!obj.contains_key("openBagOnHit"));
-    assert_eq!(obj.len(), 9);
+    assert_eq!(obj.len(), 10);
+    assert_eq!(
+        obj.get("telegram"),
+        Some(&serde_json::json!({ "botToken": "123456:abc", "chatId": "-10042" }))
+    );
     assert_eq!(
         obj.get("network"),
         Some(&serde_json::json!({
@@ -687,10 +696,16 @@ fn 线路设置规范化去掉空白与控制地址结尾斜杠() {
             },
             proxies: vec![" http://10.0.0.1:3128 ".into(), "   ".into()],
         },
+        telegram: TelegramSettings {
+            bot_token: " 123456:abc ".into(),
+            chat_id: " -10042\n".into(),
+        },
         ..Settings::default()
     };
     settings.normalize();
     assert_eq!(settings.network.proxies, ["http://10.0.0.1:3128"]);
+    assert_eq!(settings.telegram.bot_token, "123456:abc");
+    assert_eq!(settings.telegram.chat_id, "-10042");
     let clash = &settings.network.clash;
     assert_eq!(clash.controller, "http://127.0.0.1:9097");
     assert_eq!(clash.secret, "key");

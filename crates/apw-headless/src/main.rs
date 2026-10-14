@@ -3,9 +3,9 @@
 //! Same role as `src-tauri`'s `run()`: wire up the watcher, forward its
 //! events, and send alerts. The differences are deliberate, not missing
 //! pieces: there is no tray, no updater, and no local speaker, because none
-//! of those exist on a server. Alerts go out as Bark pushes and, with
-//! `APW_TELEGRAM_BOT_TOKEN`/`APW_TELEGRAM_CHAT_ID` set, Telegram messages —
-//! both just HTTP requests in `apw-core`. "Open the bag page automatically"
+//! of those exist on a server. Alerts go out as Bark pushes and Telegram
+//! messages (bot set in the web UI, or `APW_TELEGRAM_BOT_TOKEN`/
+//! `APW_TELEGRAM_CHAT_ID`), both just HTTP requests in `apw-core`. "Open the bag page automatically"
 //! has no meaning without a local browser, so that destination is instead
 //! embedded as the link in the alert.
 //!
@@ -42,8 +42,9 @@ pub(crate) struct AppState {
     fetcher: CamoufoxFetcher,
     catalog: Catalog,
     http: reqwest::Client,
-    /// From the environment at startup; a no-op when not configured.
-    telegram: Telegram,
+    /// From the environment at startup; used while the settings leave
+    /// Telegram empty, and a no-op when that is unset too.
+    env_telegram: Telegram,
     store: SettingsStore,
     /// In-memory copy, replaced only after the new settings are on disk.
     settings: RwLock<Settings>,
@@ -78,6 +79,19 @@ impl AppState {
         self.catalog.attach_pickup_locations(targets);
     }
 
+    /// The bot from the settings when filled in, else the environment's.
+    fn telegram(&self, settings: &Settings) -> Telegram {
+        let page = &settings.telegram;
+        if page.bot_token.is_empty() && page.chat_id.is_empty() {
+            return self.env_telegram.clone();
+        }
+        Telegram::new(
+            page.bot_token.clone(),
+            page.chat_id.clone(),
+            self.http.clone(),
+        )
+    }
+
     fn notice(&self, text: String) {
         eprintln!("[notice] {text}");
         self.pushes.send(web::Push::notice(text)).ok();
@@ -106,11 +120,12 @@ fn target_open_url(catalog: &Catalog, target: &Target, destination: OpenOnHit) -
 async fn send_alert(
     app: &AppState,
     bark_url: &str,
+    telegram: Telegram,
     notification: &Notification,
 ) -> Result<(), String> {
     Multi::new()
         .with(Bark::new(bark_url.to_string(), app.http.clone()))
-        .with(app.telegram.clone())
+        .with(telegram)
         .notify(notification)
         .await
         .map_err(|err| err.to_string())
@@ -149,7 +164,7 @@ async fn handle_event(app: &AppState, event: Event) {
         Event::InStock { state } => {
             let target = &state.target;
             // Read per hit, not once at startup: the web UI can change
-            // the Bark address and destination while the watcher runs.
+            // Bark, Telegram and the destination while the watcher runs.
             let settings = app.settings_snapshot();
             let mut notification = Notification::new(
                 "In stock",
@@ -160,9 +175,10 @@ async fn handle_event(app: &AppState, event: Event) {
             }
             println!("[in-stock] {} {}", target.store_title, target.product_name);
             let bark_url = settings.bark_url_for(target);
-            if bark_url.trim().is_empty() && !app.telegram.is_configured() {
+            let telegram = app.telegram(&settings);
+            if bark_url.trim().is_empty() && !telegram.is_configured() {
                 println!("[notify] no Bark URL or Telegram chat for this target, alert skipped");
-            } else if let Err(err) = send_alert(app, bark_url, &notification).await {
+            } else if let Err(err) = send_alert(app, bark_url, telegram, &notification).await {
                 app.notice(format!("alert failed: {err}"));
             }
         }
@@ -279,21 +295,21 @@ async fn main() {
         settings.network.proxies.len()
     );
 
-    // Env, not settings: the token is a bot credential, so it belongs in a
-    // Secret, not in a JSON file the web UI sends to every browser.
+    // The environment's bot is the default: a Secret keeps the token out of
+    // settings.v2.json and the web UI. Telegram fields set in the web UI win.
     let token = std::env::var("APW_TELEGRAM_BOT_TOKEN").unwrap_or_default();
     let chat_id = std::env::var("APW_TELEGRAM_CHAT_ID").unwrap_or_default();
     if token.trim().is_empty() != chat_id.trim().is_empty() {
         exit_with("set both APW_TELEGRAM_BOT_TOKEN and APW_TELEGRAM_CHAT_ID, or neither".into());
     }
     let http = reqwest::Client::new();
-    let telegram = Telegram::new(token, chat_id, http.clone());
+    let env_telegram = Telegram::new(token, chat_id, http.clone());
     println!(
-        "Telegram alerts {}",
-        if telegram.is_configured() {
+        "Telegram from the environment: {} (the web UI's Telegram fields take precedence)",
+        if env_telegram.is_configured() {
             "on"
         } else {
-            "off (set APW_TELEGRAM_BOT_TOKEN and APW_TELEGRAM_CHAT_ID to enable)"
+            "off"
         }
     );
 
@@ -311,7 +327,7 @@ async fn main() {
         fetcher,
         catalog,
         http,
-        telegram,
+        env_telegram,
         store,
         settings: RwLock::new(Settings::default()),
         pushes,

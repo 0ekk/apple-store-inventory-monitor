@@ -106,6 +106,9 @@ Field notes:
   so instead the chosen URL (bag page, education-store bag page, or the
   product page for `"product"`) is embedded as the tappable link in the
   Bark push and the Telegram message.
+- `telegram`: `{"botToken": "...", "chatId": "..."}`, both set or both
+  empty. Empty falls back to the environment; see
+  [Telegram alerts](#telegram-alerts). The desktop app ignores it.
 - `network.proxies`: optional exit proxies for Apple queries, one
   `scheme://[user:pass@]host:port` string each (`http`, `https` or
   `socks5`; the port must be written out). Every request picks one at
@@ -114,26 +117,36 @@ Field notes:
 
 ## Telegram alerts
 
-Optional, next to Bark. Set both variables on the monitor and every stock
-hit (and the web UI's test button) also sends a Telegram message: title,
-store and model, and the `openOnHit` link on the last line.
+Optional, next to Bark. Once a bot is set, every stock hit (and the web UI's
+test button) also sends a Telegram message: title, store and model, and the
+`openOnHit` link on the last line. You need two values:
 
-- `APW_TELEGRAM_BOT_TOKEN`: the token @BotFather gives you for `/newbot`.
-- `APW_TELEGRAM_CHAT_ID`: where messages go. A bot can't open a chat, so
-  send your bot any message first, then read `chat.id` from
+- Bot token: what @BotFather gives you for `/newbot`.
+- Chat ID: where messages go. A bot can't open a chat, so send your bot any
+  message first, then read `chat.id` from
   `curl https://api.telegram.org/bot<token>/getUpdates`. Group IDs are
   negative (add the bot to the group first). A public channel can use
   `@channelname`, with the bot as an admin.
 
-Setting only one of the two makes the monitor exit at startup. Every target
+Set them in either place:
+
+1. The [web UI](#web-ui)'s Telegram panel. They are saved to
+   `settings.v2.json` (mode 0600, like the Bark key) and apply on the next
+   alert, with no restart. Anyone who can log in to the web UI can read the
+   token there.
+2. `APW_TELEGRAM_BOT_TOKEN` and `APW_TELEGRAM_CHAT_ID` on the monitor (a
+   Secret on Kubernetes). These are used only while both web UI fields are
+   empty, so the token never reaches the browser. Setting only one of the
+   two makes the monitor exit at startup.
+
+The web UI likewise refuses to save just one of its two fields. Every target
 alerts the same chat; there is no Telegram counterpart of
 `productBarkUrls`, so use a group to reach several people. As with Bark, a
 failed send is logged and shown in the UI and never changes a stock result.
 
-The token stays in the environment (a Secret on Kubernetes) rather than in
-`settings.v2.json`, so the web UI never receives it. To reach Telegram
-through a proxy, set `HTTPS_PROXY=http://host:port` on the monitor; Bark
-pushes use it too, and the plain-HTTP sidecar calls don't. On Kubernetes:
+To reach Telegram through a proxy, set `HTTPS_PROXY=http://host:port` on the
+monitor; Bark pushes use it too, and the plain-HTTP sidecar calls don't. The
+Kubernetes Secret, for the environment option:
 
 ```sh
 kubectl -n apw-monitor create secret generic apw-telegram \
@@ -147,13 +160,14 @@ Set `APW_WEB_PASSWORD` and the monitor also serves the desktop app's own
 interface over HTTP, at `APW_WEB_ADDR` (default `127.0.0.1:8080`). Log in as
 user `admin` with that password. From the UI you can pick region, store and
 model, start or pause the watcher, retry now, change the interval, set the
-default or per-model Bark address, send a test alert, refresh the store and
+default or per-model Bark address, set a Telegram bot, send a test alert, refresh the store and
 model lists from Apple, and watch each poll cycle live.
 
 It is the same React code as the desktop app (`src/`), unmodified, except for
-one panel: the web build replaces the Clash "query route" panel with a
+one panel slot: the web build replaces the Clash "query route" panel with a
+[Telegram](#telegram-alerts) panel and a
 [random proxy list](#random-exit-proxies)
-(`crates/apw-headless/web/NetworkSettings.tsx`). It also swaps Tauri's
+(`crates/apw-headless/web/NetworkSettings.tsx`, `TelegramSettings.tsx`). It also swaps Tauri's
 `invoke`/`listen` for HTTP calls and a server-sent event
 stream (`crates/apw-headless/web/tauri-shim.ts`), and the server implements
 the same command names as the desktop backend (`crates/apw-headless/src/web.rs`).

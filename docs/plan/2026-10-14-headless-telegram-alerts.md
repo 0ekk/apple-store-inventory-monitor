@@ -17,18 +17,27 @@ devices. The user asked for a Telegram bot as an additional alert channel.
    rather than in `notify.rs` so upstream changes to `notify.rs` keep merging
    cleanly. The desktop app could use it later; it doesn't today.
 
-2. **Configured by environment, not by settings.** `APW_TELEGRAM_BOT_TOKEN`
-   and `APW_TELEGRAM_CHAT_ID`. The bot token is a full credential for the
-   bot. In the environment it can come from a Kubernetes Secret, and it never
-   reaches `settings.v2.json`, which the web UI sends to every browser that
-   logs in. This also needs no UI change: the web UI reuses the desktop
-   `src/App.tsx`, which has no hook point for another notification field.
-   Trade-off: changing the chat needs a restart.
+2. **Configured in the web UI, with the environment as a fallback.**
+   (Revised the same day; the first version read the environment only.)
+   `Settings.telegram` (`{botToken, chatId}`) is set from a headless-only
+   Telegram panel. While both fields are empty, the monitor uses
+   `APW_TELEGRAM_BOT_TOKEN` and `APW_TELEGRAM_CHAT_ID`. Precedence is per
+   pair, never per field, so a page token is never paired with an
+   environment chat. The settings are read at alert time, so a change needs
+   no restart.
+   Trade-off: a token set in the page lives in `settings.v2.json` (mode
+   0600, like the Bark device key) and goes to every browser that logs in to
+   the web UI, which is the same exposure the Bark key already has. Users who
+   want the token kept out of the browser leave the page empty and use the
+   environment (a Kubernetes Secret).
 
-3. **Both or neither.** Setting only one variable exits at startup, like an
-   invalid proxy list. In the library, both empty means "not configured"
-   (`Ok(())`, per the `Notifier` contract) and half-configured is a `Config`
-   error.
+3. **Both or neither, at every entry point.** Setting only one variable
+   exits at startup, like an invalid proxy list. `save_settings` rejects a
+   half-filled page setting, and the panel saves only once both fields are
+   filled (or both cleared), so moving from the first field to the second
+   doesn't trip that check. In the library, both empty means "not
+   configured" (`Ok(())`, per the `Notifier` contract) and half-configured is
+   a `Config` error.
 
 4. **Plain-text `sendMessage`, one chat for all targets.** Title, body and
    the `openOnHit` link, one per line, with no `parse_mode`, so store and
@@ -46,14 +55,29 @@ devices. The user asked for a Telegram bot as an additional alert channel.
 6. **No dedicated proxy setting.** reqwest honours `HTTPS_PROXY`, which
    covers deployments that can't reach `api.telegram.org` directly.
 
+7. **The panel shares the query-route slot.** The desktop `src/App.tsx` has
+   no hook point for a new notification panel, and the headless build
+   already aliases `@/components/NetworkSettings` to its own file. That file
+   now renders `TelegramSettings.tsx` above the proxy-list panel, so it sits
+   right below the Bark settings, and `src/` stays unmodified. The panel's
+   text is English, like the rest of the headless-only UI; the token field is
+   a password input.
+
 ## Impact
 
 - New public type `apw_core::notify::Telegram`. `read_capped` takes the
   channel name, so its errors name the right channel.
-- Headless: `AppState` holds a `Telegram`; stock hits and the web UI's test
-  button go through `send_alert` (Bark + Telegram via `Multi`). A hit is
-  skipped only when neither channel is configured. The test button's error
-  now names both options.
+- `apw_core::config`: new `TelegramSettings` and `Settings.telegram`
+  (serde default, so older settings files load; `normalize` trims both
+  values). The desktop app saves and loads the field but never reads it.
+- Headless: `AppState` keeps the environment's `Telegram`, and
+  `AppState::telegram(&settings)` picks the page pair or that fallback. Stock
+  hits and the web UI's test button go through `send_alert` (Bark + Telegram
+  via `Multi`). A hit is skipped only when neither channel is configured.
+  The test button's error now names both options. Startup logs whether the
+  environment bot is set and that the page fields take precedence.
+- Web UI: new `crates/apw-headless/web/TelegramSettings.tsx`, rendered by the
+  headless `NetworkSettings.tsx`.
 - Deploy: `docker-compose.yml` passes both variables through;
   `deploy/k8s/10-apw.yaml` reads them from an optional `apw-telegram`
   Secret. The NetworkPolicy already allows public HTTPS, so no rule changes.
@@ -79,3 +103,15 @@ devices. The user asked for a Telegram bot as an additional alert channel.
 - `docker compose config` accepts the compose file, and the k8s manifest
   parses as YAML. Not tested: delivery to a real chat (needs the user's
   bot token).
+- Page configuration (second change):
+  - `tests/config.rs` covers the `telegram` wire format
+    (`{"botToken":..,"chatId":..}`) and trimming in `normalize`;
+  - with the page fields empty, the test command used the environment bot
+    (the `HTTPS_PROXY` listener saw the `CONNECT`);
+  - saving a half-filled pair returned "set both the Telegram bot token and
+    chat ID, or neither";
+  - a padded pair was saved trimmed to `settings.v2.json`;
+  - with no environment bot and the page pair set, the test command reached
+    the real Telegram API (`HTTP 401: Unauthorized` for the fake token);
+  - `tsc` passes, and a headless Chrome screenshot of the web build shows
+    the panel between the Bark settings and the query-route panel.
