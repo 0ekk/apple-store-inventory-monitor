@@ -48,8 +48,9 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-    # If you set the optional apw-proxy Secret (see 10-apw.yaml), allow the
-    # proxy too: private addresses and ports other than 443 are denied above.
+    # If you set the optional apw-proxy Secret (see 10-apw.yaml) or a proxy
+    # list in the web UI, allow each proxy too: private addresses and ports
+    # other than 443 are denied above.
     # - to:
     #     - ipBlock:
     #         cidr: 192.168.1.10/32   # your proxy's IP

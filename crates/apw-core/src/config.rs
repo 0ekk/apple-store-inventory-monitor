@@ -228,6 +228,10 @@ impl Default for ClashSettings {
 pub struct NetworkSettings {
     pub mode: NetworkMode,
     pub clash: ClashSettings,
+    /// Headless only: `scheme://[user:pass@]host:port` exit proxies (http,
+    /// https or socks5); each Apple request picks one at random. The desktop
+    /// app ignores this list.
+    pub proxies: Vec<String>,
 }
 
 impl NetworkSettings {
@@ -245,6 +249,12 @@ impl NetworkSettings {
         if clash.pinned_node.is_empty() {
             clash.pinned_node = "DIRECT".into();
         }
+        self.proxies = self
+            .proxies
+            .iter()
+            .map(|proxy| proxy.trim().to_string())
+            .filter(|proxy| !proxy.is_empty())
+            .collect();
     }
 }
 

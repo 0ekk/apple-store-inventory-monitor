@@ -109,6 +109,7 @@ fn 样例设置() -> Settings {
                 node_filter: "香港|日本".into(),
                 pinned_node: "DIRECT".into(),
             },
+            proxies: vec!["socks5://127.0.0.1:1080".into()],
         },
     }
 }
@@ -591,7 +592,8 @@ fn 设置的线上格式是小驼峰() {
                 "proxyPort": 7899,
                 "nodeFilter": "香港|日本",
                 "pinnedNode": "DIRECT"
-            }
+            },
+            "proxies": ["socks5://127.0.0.1:1080"]
         }))
     );
 }
@@ -683,10 +685,12 @@ fn 线路设置规范化去掉空白与控制地址结尾斜杠() {
                 node_filter: " 香港|日本 ".into(),
                 pinned_node: "  ".into(),
             },
+            proxies: vec![" http://10.0.0.1:3128 ".into(), "   ".into()],
         },
         ..Settings::default()
     };
     settings.normalize();
+    assert_eq!(settings.network.proxies, ["http://10.0.0.1:3128"]);
     let clash = &settings.network.clash;
     assert_eq!(clash.controller, "http://127.0.0.1:9097");
     assert_eq!(clash.secret, "key");

@@ -15,7 +15,8 @@
 //! or a part number is.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::hash::{BuildHasher, RandomState};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use apw_core::apple::{ApiError, DeliveryInfo, Fetcher, StoreAvailability, parse_pickup_message};
@@ -60,6 +61,59 @@ struct PickupRequest<'a> {
     /// fulfillment endpoint can refuse on its own while pickup still works,
     /// and that must not cost the pickup session.
     keep_session_on_block: bool,
+    /// Exit proxy for this request; the sidecar keeps a warmed page per
+    /// proxy and region. Omitted: the sidecar's own default (SIDECAR_PROXY).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy: Option<&'a str>,
+}
+
+const PROXY_FORMAT: &str = "must look like http://[user:pass@]host:port (or https://, socks5://)";
+
+/// Refuses a `network.proxies` entry the sidecar's `parse_proxy` would
+/// refuse, so a typo fails on save instead of on every Nth query. Errors
+/// name the entry by position only: the entry may carry a password.
+pub fn validate_proxies(proxies: &[String]) -> Result<(), String> {
+    for (index, raw) in proxies.iter().enumerate() {
+        let url = reqwest::Url::parse(raw).ok();
+        // `Url` drops a default port (http://host:80), and the sidecar wants
+        // the port written out, so look for it in the text itself.
+        let authority = raw.split_once("://").map_or("", |(_, rest)| {
+            rest.split(['/', '?', '#']).next().unwrap_or("")
+        });
+        let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+        let explicit_port = host_port.rsplit_once(':').is_some_and(|(host, port)| {
+            !port.is_empty()
+                && port.bytes().all(|b| b.is_ascii_digit())
+                && (!host.starts_with('[') || host.ends_with(']'))
+        });
+        let well_formed = url.as_ref().is_some_and(|url| {
+            matches!(url.scheme(), "http" | "https" | "socks5")
+                && url.host_str().is_some_and(|host| !host.is_empty())
+        }) && explicit_port;
+        let number = index + 1;
+        if !well_formed {
+            return Err(format!("proxy #{number} {PROXY_FORMAT}"));
+        }
+        if url.is_some_and(|url| url.scheme() == "socks5" && !url.username().is_empty()) {
+            return Err(format!(
+                "proxy #{number}: the browser does not support socks5 with a username/password; \
+                 use the provider's http:// endpoint or an IP-allowlisted socks5 proxy"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `scheme://host:port` of a proxy entry, safe for logs.
+fn proxy_label(raw: &str) -> String {
+    reqwest::Url::parse(raw).map_or_else(
+        |_| "an invalid proxy".into(),
+        |mut url| {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.as_str().trim_end_matches('/').to_string()
+        },
+    )
 }
 
 #[derive(Deserialize)]
@@ -78,6 +132,8 @@ pub struct CamoufoxFetcher {
     http: reqwest::Client,
     sidecar_url: String,
     delivery: Arc<Mutex<DeliveryState>>,
+    /// `network.proxies` from the settings; shared with every clone.
+    proxies: Arc<RwLock<Vec<String>>>,
 }
 
 /// Delivery quotes are cached per target and address, like the desktop
@@ -196,7 +252,26 @@ impl CamoufoxFetcher {
             http,
             sidecar_url,
             delivery: Arc::default(),
+            proxies: Arc::default(),
         })
+    }
+
+    pub fn set_proxies(&self, proxies: Vec<String>) {
+        *self.proxies.write().unwrap_or_else(|e| e.into_inner()) = proxies;
+    }
+
+    /// A uniformly random entry, `None` when the list is empty.
+    // ponytail: no per-proxy health; a dead or blocked proxy keeps failing its
+    // share of requests until removed. Add a cooldown like the desktop
+    // RoutePool if that shows up in practice.
+    fn pick_proxy(&self) -> Option<String> {
+        let proxies = self.proxies.read().unwrap_or_else(|e| e.into_inner());
+        if proxies.is_empty() {
+            return None;
+        }
+        // Every RandomState gets fresh keys, so hashing nothing is a random u64.
+        let index = RandomState::new().hash_one(()) % proxies.len() as u64;
+        proxies.get(index as usize).cloned()
     }
 
     fn delivery_state(&self) -> std::sync::MutexGuard<'_, DeliveryState> {
@@ -212,6 +287,7 @@ impl CamoufoxFetcher {
         url: String,
         keep_session_on_block: bool,
     ) -> Result<(u16, String), ApiError> {
+        let proxy = self.pick_proxy();
         let mut headers = BTreeMap::new();
         headers.insert(
             "Accept",
@@ -229,7 +305,12 @@ impl CamoufoxFetcher {
             },
             fetch: FetchSpec { url, headers },
             keep_session_on_block,
+            proxy: proxy.as_deref(),
         };
+        let via = proxy
+            .as_deref()
+            .map(|proxy| format!(" (via {})", proxy_label(proxy)))
+            .unwrap_or_default();
 
         let response = self
             .http
@@ -242,11 +323,16 @@ impl CamoufoxFetcher {
             ApiError::Transport(format!("camoufox sidecar returned invalid JSON: {e}"))
         })?;
         if let Some(error) = payload.error {
-            return Err(ApiError::Transport(format!("camoufox sidecar: {error}")));
+            return Err(ApiError::Transport(format!(
+                "camoufox sidecar: {error}{via}"
+            )));
         }
         let status = payload
             .status
             .ok_or_else(|| ApiError::Transport("camoufox sidecar omitted status".into()))?;
+        if status != 200 && !via.is_empty() {
+            eprintln!("[proxy] {} HTTP {status}{via}", region.locale);
+        }
         Ok((status, payload.body.unwrap_or_default()))
     }
 
@@ -631,6 +717,46 @@ mod tests {
             keys,
             ["pl", "mts.0", "store", "parts.0", "parts.1", "parts.2"]
         );
+    }
+
+    #[test]
+    fn proxy_validation_matches_the_sidecar() {
+        let ok = |raw: &str| validate_proxies(&[raw.to_string()]);
+        for good in [
+            "http://172.18.0.1:7890",
+            "http://u%40corp:p%3Aw@proxy.example:80",
+            "https://proxy.example:443",
+            "socks5://[fd00::1]:1080",
+        ] {
+            assert_eq!(ok(good), Ok(()), "{good}");
+        }
+        for bad in [
+            "proxy.example:8080",
+            "ftp://u:hunter2@proxy.example:21",
+            "http://u:hunter2@proxy.example",
+            "socks5://[fd00::1]",
+            "socks5://u:hunter2@proxy.example:1080",
+        ] {
+            let error = ok(bad).unwrap_err();
+            assert!(error.starts_with("proxy #1"), "{bad}: {error}");
+            assert!(!error.contains("hunter2"), "error leaks the password");
+        }
+        let error = validate_proxies(&["http://a:1".into(), "nope".into()]).unwrap_err();
+        assert!(error.starts_with("proxy #2"), "{error}");
+        assert_eq!(
+            proxy_label("http://u:hunter2@proxy.example:3128"),
+            "http://proxy.example:3128"
+        );
+    }
+
+    #[test]
+    fn every_request_picks_a_random_proxy() {
+        let fetcher = CamoufoxFetcher::new("http://127.0.0.1:1".into()).unwrap();
+        assert_eq!(fetcher.pick_proxy(), None);
+        let list = ["http://a:1", "http://b:1", "socks5://c:1"].map(String::from);
+        fetcher.clone().set_proxies(list.to_vec());
+        let picked: HashSet<String> = (0..200).filter_map(|_| fetcher.pick_proxy()).collect();
+        assert_eq!(picked, HashSet::from(list));
     }
 
     fn shanghai() -> DeliveryRegion {

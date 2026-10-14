@@ -21,8 +21,13 @@ weight with nothing to justify it:
     {"locale": "zh_CN",
      "warm": {"url": "https://www.apple.com/sg/"},
      "fetch": {"url": "https://www.apple.com/sg/shop/retail/pickup-message?...", "headers": {...}},
-     "keep_session_on_block": false}
+     "keep_session_on_block": false,
+     "proxy": "socks5://user:pass@host:1080"}
     -> {"status": 200, "body": "..."}  or  {"error": "..."}
+
+  `proxy` is optional; without it the page uses SIDECAR_PROXY (or a direct
+  connection). Each (proxy, locale) pair gets its own warmed page and cookie
+  jar, since Apple's bot check is passed per exit IP.
 
   (Named for its first use; it fetches any same-origin URL, delivery
   quotes included.)
@@ -41,6 +46,9 @@ from camoufox import DefaultAddons
 from camoufox.async_api import AsyncCamoufox
 
 WARM_TIMEOUT_SECONDS = 50.0
+# Live warmed pages, one per (proxy, locale) in use. The least recently used
+# idle ones are closed past this; each page holds a few hundred MB.
+MAX_PAGES = int(os.environ.get("SIDECAR_MAX_PAGES", "4"))
 MIN_REQUEST_INTERVAL_SECONDS = 2.0
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
@@ -60,20 +68,24 @@ async (spec) => {
 """
 
 
-def proxy_from_env() -> dict | None:
-    """SIDECAR_PROXY=scheme://[user:pass@]host:port -> Playwright proxy settings.
+def parse_proxy(raw: str) -> dict:
+    """scheme://[user:pass@]host:port -> Playwright proxy settings.
 
     Apple blocks the pickup endpoint per exit IP (HTTP 541 even for a real
     desktop browser once an IP is flagged), so the browser's exit IP has to
     be switchable without rebuilding anything.
     """
-    raw = os.environ.get("SIDECAR_PROXY", "").strip()
-    if not raw:
-        return None
     url = urlsplit(raw)
-    if url.scheme not in ("http", "https", "socks5") or not url.hostname or url.port is None:
+    try:
+        port = url.port
+    except ValueError:
+        port = None
+    if url.scheme not in ("http", "https", "socks5") or not url.hostname or port is None:
         # Never echo `raw`: it may carry the proxy password.
-        raise ValueError("SIDECAR_PROXY must look like http://[user:pass@]host:port (or https://, socks5://)")
+        raise ValueError("proxy must look like http://[user:pass@]host:port (or https://, socks5://)")
+    if url.scheme == "socks5" and url.username:
+        # Playwright's Firefox refuses these at page creation.
+        raise ValueError("socks5 with a username/password is not supported by the browser")
     host_port = url.netloc.rpartition("@")[2]  # keeps IPv6 brackets intact
     proxy = {"server": f"{url.scheme}://{host_port}"}
     if url.username:
@@ -82,11 +94,17 @@ def proxy_from_env() -> dict | None:
     return proxy
 
 
+def proxy_from_env() -> dict | None:
+    """SIDECAR_PROXY: the launch-wide default for requests that name no proxy."""
+    raw = os.environ.get("SIDECAR_PROXY", "").strip()
+    return parse_proxy(raw) if raw else None
+
+
 class RegionSession:
-    """One warmed-up page per region locale, reused across requests.
+    """One warmed-up page per (proxy, region locale), reused across requests.
 
     The lock does double duty: it serializes requests to the same region
-    (Apple treats a burst as automation) and it protects `page` from being
+    over the same exit IP (Apple treats a burst as automation) and it protects `page` from being
     read mid-replacement while a previous request is still tearing it down.
     """
 
@@ -101,7 +119,7 @@ class Sidecar:
     def __init__(self):
         self._camoufox = None
         self._browser = None
-        self._sessions: dict[str, RegionSession] = {}
+        self._sessions: dict[tuple[str, str], RegionSession] = {}
         # One Apple page load at a time across all regions. Loads are the
         # memory peak (a buy page pulls dozens of images); three regions
         # warming at once got the container OOM-killed at 1.5 GiB. The
@@ -116,8 +134,8 @@ class Sidecar:
         # likewise runs with --disable-extensions.
         proxy = proxy_from_env()
         print(f"apple traffic via {proxy['server'] if proxy else 'direct connection'}", flush=True)
-        # ponytail: one static proxy for the process lifetime; rotating on 541
-        # (upstream's Clash node switching) needs a browser relaunch per switch.
+        # SIDECAR_PROXY is only the default: a request that names its own
+        # proxy gets a page in a separate context routed through it.
         self._camoufox = AsyncCamoufox(
             headless=True, exclude_addons=[DefaultAddons.UBO], proxy=proxy
         )
@@ -127,10 +145,24 @@ class Sidecar:
         if self._camoufox is not None:
             await self._camoufox.__aexit__(None, None, None)
 
-    def _session_for(self, locale: str) -> RegionSession:
-        return self._sessions.setdefault(locale, RegionSession())
+    def _session_for(self, key: tuple[str, str]) -> RegionSession:
+        return self._sessions.setdefault(key, RegionSession())
 
-    async def _ensure_warm(self, session: RegionSession, warm: dict):
+    async def _evict_idle(self):
+        """Close the least recently used idle pages beyond MAX_PAGES.
+
+        A session whose lock is held is mid-request and never closed here, so
+        the count can briefly exceed the cap while requests are in flight.
+        """
+        live = [s for s in self._sessions.values() if s.page is not None]
+        idle = sorted((s for s in live if not s.lock.locked()), key=lambda s: s.last_request)
+        for session in idle[: max(0, len(live) - MAX_PAGES)]:
+            # Cleared before the await, so a request that takes this session's
+            # lock meanwhile warms a new page instead of using a closing one.
+            page, session.page, session.warm_url = session.page, None, None
+            await page.close()
+
+    async def _ensure_warm(self, session: RegionSession, warm: dict, proxy: dict | None):
         url = warm["url"]
 
         if session.page is not None and session.warm_url == url:
@@ -141,7 +173,9 @@ class Sidecar:
             session.page = None
 
         async with self._warm_lock:
-            page = await self._browser.new_page()
+            # A page made by Browser.new_page has its own context: separate
+            # cookies, and here its own exit proxy (None keeps the launch one).
+            page = await self._browser.new_page(proxy=proxy)
             try:
                 # "load" fires when document.readyState becomes "complete" --
                 # the same readiness signal upstream's desktop app waits for.
@@ -153,15 +187,18 @@ class Sidecar:
                 raise
         session.page = page
         session.warm_url = url
+        await self._evict_idle()
 
     async def pickup(self, payload: dict) -> dict:
         locale = payload["locale"]
         warm = payload["warm"]
         fetch_spec = payload["fetch"]
+        raw_proxy = payload.get("proxy") or ""
+        proxy = parse_proxy(raw_proxy) if raw_proxy else None
 
-        session = self._session_for(locale)
+        session = self._session_for((raw_proxy, locale))
         async with session.lock:
-            await self._ensure_warm(session, warm)
+            await self._ensure_warm(session, warm, proxy)
 
             elapsed = time.monotonic() - session.last_request
             if elapsed < MIN_REQUEST_INTERVAL_SECONDS:

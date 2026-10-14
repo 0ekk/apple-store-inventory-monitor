@@ -92,8 +92,9 @@ spec:
               value: "127.0.0.1"
             - name: SIDECAR_PORT
               value: "8787"
-            # Optional exit proxy for Apple traffic, for when Apple blocks
-            # the node's IP (HTTP 541). No Secret = direct connection. To use
+            # Optional default exit proxy for Apple traffic, for when Apple
+            # blocks the node's IP (HTTP 541); a proxy list set in the web UI
+            # takes precedence. No Secret = direct connection. To use
             # one, create the Secret, allow its address in
             # 01-networkpolicy.yaml, then restart the pod:
             #   kubectl -n apw-monitor create secret generic apw-proxy \

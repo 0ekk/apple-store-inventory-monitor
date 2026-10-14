@@ -106,6 +106,11 @@ Field notes:
   so instead the chosen URL (bag page, education-store bag page, or the
   product page for `"product"`) is embedded as the tappable link in the
   Bark push.
+- `network.proxies`: optional exit proxies for Apple queries, one
+  `scheme://[user:pass@]host:port` string each (`http`, `https` or
+  `socks5`; the port must be written out). Every request picks one at
+  random; see [Random exit proxies](#random-exit-proxies). The rest of
+  `network` (Clash) is desktop-only and ignored here.
 
 ## Web UI
 
@@ -116,15 +121,17 @@ model, start or pause the watcher, retry now, change the interval, set the
 default or per-model Bark address, send a test push, refresh the store and
 model lists from Apple, and watch each poll cycle live.
 
-It is the same React code as the desktop app (`src/`), unmodified. The web
-build swaps Tauri's `invoke`/`listen` for HTTP calls and a server-sent event
+It is the same React code as the desktop app (`src/`), unmodified, except for
+one panel: the web build replaces the Clash "query route" panel with a
+[random proxy list](#random-exit-proxies)
+(`crates/apw-headless/web/NetworkSettings.tsx`). It also swaps Tauri's
+`invoke`/`listen` for HTTP calls and a server-sent event
 stream (`crates/apw-headless/web/tauri-shim.ts`), and the server implements
 the same command names as the desktop backend (`crates/apw-headless/src/web.rs`).
 Some controls have no headless counterpart. Using them logs a "not available
 in headless mode" message:
 
 - the alert sound toggle (no speaker; it is saved but does nothing)
-- Clash route settings, node list and node test
 - the in-app updater (deploy a newer image instead)
 
 Security model:
@@ -205,7 +212,10 @@ exit IP:
   kubectl -n apw-monitor rollout restart deploy/apw-monitor
   ```
 
-The sidecar log's first line says which route is in use
+For more than one exit IP, use a [proxy list](#random-exit-proxies)
+instead; `SIDECAR_PROXY` then only covers requests when the list is empty.
+
+The sidecar log's first line says which default route is in use
 (`apple traffic via http://host:port` or `via direct connection`). Only the
 browser uses the proxy. Bark pushes and the web UI's catalog refresh still
 go out directly. A Clash instance on your own machine is reachable from a
@@ -215,6 +225,33 @@ network gateway as the host, e.g. `http://172.18.0.1:7890`. Camoufox logs a
 needs the `camoufox[geoip]` extra, which the image doesn't install (see
 `requirements.txt`), so the browser's timezone and locale don't follow the
 proxy's location.
+
+## Random exit proxies
+
+The web UI's **Query route** panel (or `network.proxies` in the settings
+file) holds a list of exit proxies, one per line. For every Apple request
+(pickup and delivery) the monitor picks one at random and the sidecar runs
+the request from a page that goes through that proxy. Apple's bot check is
+passed per exit IP, so each proxy and region pair keeps its own warmed page
+and cookies: only the first request on a proxy pays for a page load.
+
+- Saving refuses a malformed entry (wrong scheme, no explicit port), and so
+  does startup if the file was edited by hand. Errors name the entry by its
+  position, never its text, since it may hold a password.
+- `socks5://` with a username/password is refused: the browser (Firefox,
+  driven by Playwright) does not support SOCKS5 authentication. Use the
+  provider's `http://` endpoint with the same credentials, or a socks5
+  proxy that allow-lists your server's IP.
+- Live pages are capped by `SIDECAR_MAX_PAGES` (default 4) on the sidecar.
+  Past that, the least recently used idle page is closed and warmed again
+  on its next use. Each page holds a few hundred MB, so raise it together
+  with the sidecar's memory limit.
+- A dead or blocked proxy is not skipped: it keeps failing its share of
+  requests until you remove it. The monitor log shows which one
+  (`[proxy] zh_CN HTTP 541 (via http://host:port)`), and sidecar errors in
+  the UI end with the same `(via ...)` label, credentials stripped.
+- Kubernetes: allow every proxy's address and port in
+  `01-networkpolicy.yaml`, as for `SIDECAR_PROXY`.
 
 ## Known differences from the desktop app
 
@@ -226,10 +263,10 @@ proxy's location.
   the embedded snapshot the desktop app ships with; the UI's refresh button
   updates them from Apple and caches the result in `catalog-cache/` next to
   the settings file.
-- No automatic route rotation. The desktop app (v1.0.18+) can rotate Clash
+- No Clash route rotation. The desktop app (v1.0.18+) can rotate Clash
   nodes when Apple blocks an exit IP; the `network` settings that drive it
-  are read but ignored here. Headless has one static exit proxy instead
-  (see [When Apple blocks your IP](#when-apple-blocks-your-ip-http-541)).
+  are read but ignored here, and the web UI's Query route panel shows a
+  [random proxy list](#random-exit-proxies) instead.
 - Delivery quotes (mainland China only, as in the desktop app) work the
   same way: set a province/city/district in the web UI and the "预计送货"
   column fills in. They are fetched through the same browser session after

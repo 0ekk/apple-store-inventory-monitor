@@ -4458,6 +4458,7 @@ mod tests {
         state.network = NetworkSettings {
             mode: NetworkMode::Clash,
             clash,
+            ..NetworkSettings::default()
         };
     }
 
@@ -4742,6 +4743,7 @@ mod tests {
             state.network = NetworkSettings {
                 mode: NetworkMode::Pinned,
                 clash,
+                ..NetworkSettings::default()
             };
         }
         let region = region_by_locale("zh_CN").unwrap();

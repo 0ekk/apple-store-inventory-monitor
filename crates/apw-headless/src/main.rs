@@ -37,6 +37,8 @@ const DEFAULT_WEB_DIR: &str = "/usr/share/apw-headless/web";
 /// shell's `AppState`, minus the Chromium fetcher and the updater.
 pub(crate) struct AppState {
     watcher: Watcher,
+    /// A clone of the watcher's fetcher, to hand it new proxy lists.
+    fetcher: CamoufoxFetcher,
     catalog: Catalog,
     http: reqwest::Client,
     store: SettingsStore,
@@ -59,6 +61,7 @@ impl AppState {
     /// the next start all keep seeing the same old settings.
     fn put_settings(&self, next: Settings) -> Result<(), String> {
         self.store.save(&next).map_err(|e| e.to_string())?;
+        self.fetcher.set_proxies(next.network.proxies.clone());
         *self.settings.write().unwrap_or_else(|e| e.into_inner()) = next;
         Ok(())
     }
@@ -255,12 +258,23 @@ async fn main() {
             .join("catalog-cache"),
     );
 
+    // Same rule as an unreadable file: fail now, not on every Nth query.
+    camoufox_fetcher::validate_proxies(&settings.network.proxies).unwrap_or_else(|err| {
+        exit_with(format!(
+            "invalid network.proxies in {}: {err}",
+            settings_path.display()
+        ))
+    });
     let fetcher = CamoufoxFetcher::new(sidecar_url.clone())
         .unwrap_or_else(|err| exit_with(format!("failed to build the sidecar client: {err}")));
-    println!("using camoufox sidecar at {sidecar_url}");
+    fetcher.set_proxies(settings.network.proxies.clone());
+    println!(
+        "using camoufox sidecar at {sidecar_url}, {} exit proxy(ies) in the random pool",
+        settings.network.proxies.len()
+    );
 
     let (watcher, events) = Watcher::spawn(
-        fetcher,
+        fetcher.clone(),
         WatcherConfig {
             interval: settings.interval(),
             delivery_region: settings.delivery_region.clone(),
@@ -270,6 +284,7 @@ async fn main() {
     let (pushes, _) = broadcast::channel(256);
     let app = Arc::new(AppState {
         watcher,
+        fetcher,
         catalog,
         http: reqwest::Client::new(),
         store,

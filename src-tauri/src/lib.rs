@@ -677,6 +677,7 @@ async fn test_clash_route(clash: ClashSettings) -> Result<ClashRouteCheck, Strin
     let mut network = apw_core::config::NetworkSettings {
         mode: apw_core::config::NetworkMode::Clash,
         clash,
+        ..Default::default()
     };
     let mut settings = Settings {
         network: network.clone(),

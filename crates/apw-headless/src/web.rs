@@ -246,9 +246,11 @@ async fn run_command(app: &AppState, name: &str, args: &Value) -> Option<Result<
         "list_delivery_localities" => list_delivery_localities(app, args).await,
         "list_watch_band_choices" => list_watch_band_choices(app, args).await,
         "list_watch_band_sizes" => list_watch_band_sizes(app, args).await,
-        "test_clash_route" | "list_clash_nodes" | "select_clash_node" => {
-            Err("not available in headless mode: Clash route rotation is not ported".into())
-        }
+        "test_clash_route" | "list_clash_nodes" | "select_clash_node" => Err(
+            "not available in headless mode: Clash route rotation is not ported \
+             (use the random proxy list instead)"
+                .into(),
+        ),
         _ => return None,
     };
     Some(result)
@@ -257,6 +259,7 @@ async fn run_command(app: &AppState, name: &str, args: &Value) -> Option<Result<
 async fn save_settings(app: &AppState, args: &Value) -> Result<Value, String> {
     let mut next: Settings = arg(args, "settings")?;
     next.normalize();
+    crate::camoufox_fetcher::validate_proxies(&next.network.proxies)?;
     app.hydrate_targets(&mut next.targets);
     app.put_settings(next.clone())?;
     app.watcher.set_targets(next.targets.clone()).await;

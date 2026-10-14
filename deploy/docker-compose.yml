@@ -16,8 +16,10 @@ services:
       - "8787"
     shm_size: "1gb"
     environment:
-      # Optional exit proxy for Apple traffic (http://[user:pass@]host:port),
-      # for when Apple blocks the server's IP with HTTP 541. Empty = direct.
+      # Optional default exit proxy for Apple traffic
+      # (http://[user:pass@]host:port), for when Apple blocks the server's IP
+      # with HTTP 541. A proxy list set in the web UI takes precedence.
+      # Empty = direct.
       SIDECAR_PROXY: ${SIDECAR_PROXY:-}
 
   monitor:
