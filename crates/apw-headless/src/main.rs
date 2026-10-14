@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use apw_core::catalog::Catalog;
-use apw_core::config::{OpenOnHit, Settings, SettingsStore};
+use apw_core::config::{OpenOnHit, Settings, SettingsStore, TelegramSettings};
 use apw_core::model::{Target, region_by_locale};
 use apw_core::notify::{Bark, Multi, Notification, Notifier, Telegram};
 use apw_core::watcher::{Event, Watcher, WatcherConfig};
@@ -80,8 +80,7 @@ impl AppState {
     }
 
     /// The bot from the settings when filled in, else the environment's.
-    fn telegram(&self, settings: &Settings) -> Telegram {
-        let page = &settings.telegram;
+    fn telegram(&self, page: &TelegramSettings) -> Telegram {
         if page.bot_token.is_empty() && page.chat_id.is_empty() {
             return self.env_telegram.clone();
         }
@@ -175,7 +174,7 @@ async fn handle_event(app: &AppState, event: Event) {
             }
             println!("[in-stock] {} {}", target.store_title, target.product_name);
             let bark_url = settings.bark_url_for(target);
-            let telegram = app.telegram(&settings);
+            let telegram = app.telegram(&settings.telegram);
             if bark_url.trim().is_empty() && !telegram.is_configured() {
                 println!("[notify] no Bark URL or Telegram chat for this target, alert skipped");
             } else if let Err(err) = send_alert(app, bark_url, telegram, &notification).await {

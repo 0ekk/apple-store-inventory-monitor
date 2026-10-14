@@ -20,9 +20,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use apw_core::catalog::CatalogError;
-use apw_core::config::{MIN_INTERVAL_SECONDS, Settings};
+use apw_core::config::{MIN_INTERVAL_SECONDS, Settings, TelegramSettings};
 use apw_core::model::{Category, REGIONS, Target, region_by_locale};
-use apw_core::notify::Notification;
+use apw_core::notify::{Notification, Notifier};
 use apw_core::watcher::Event;
 use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -230,6 +230,7 @@ async fn run_command(app: &AppState, name: &str, args: &Value) -> Option<Result<
         }
         "retry_watching_now" => reply(app.watcher.retry_now().await),
         "test_notify" => test_notify(app).await,
+        "test_telegram" => test_telegram(app, args).await,
         // The desktop app opens the page itself. Here the shim opens the
         // returned URL in the operator's browser.
         "open_target_product" => arg::<Target>(args, "target").and_then(|target| {
@@ -382,7 +383,7 @@ async fn test_notify(app: &AppState) -> Result<Value, String> {
     let bark_url = first.map_or(settings.bark_url.as_str(), |target| {
         settings.bark_url_for(target)
     });
-    let telegram = app.telegram(&settings);
+    let telegram = app.telegram(&settings.telegram);
     if bark_url.trim().is_empty() && !telegram.is_configured() {
         return Err(
             "set a Bark URL or a Telegram bot first: they are the alert channels in headless mode"
@@ -400,6 +401,38 @@ async fn test_notify(app: &AppState) -> Result<Value, String> {
     }
     send_alert(app, bark_url, telegram, &notification).await?;
     reply(())
+}
+
+/// Headless-only: the Telegram panel's test button. Sends to the bot typed in
+/// the panel, saved or not, or to the environment's bot when both are empty.
+async fn test_telegram(app: &AppState, args: &Value) -> Result<Value, String> {
+    let draft: TelegramSettings = arg(args, "telegram")?;
+    let page = TelegramSettings {
+        bot_token: draft.bot_token.trim().to_string(),
+        chat_id: draft.chat_id.trim().to_string(),
+    };
+    if page.bot_token.is_empty() != page.chat_id.is_empty() {
+        return Err("set both the Telegram bot token and chat ID, or neither".into());
+    }
+    let telegram = app.telegram(&page);
+    if !telegram.is_configured() {
+        return Err("no Telegram bot: fill in the bot token and chat ID \
+             (or set APW_TELEGRAM_BOT_TOKEN and APW_TELEGRAM_CHAT_ID on the server)"
+            .into());
+    }
+    let notification = Notification::new(
+        "Telegram test (not a stock hit)",
+        "If this arrived, in-stock alerts will reach this chat too",
+    );
+    telegram
+        .notify(&notification)
+        .await
+        .map_err(|err| err.to_string())?;
+    reply(if page.bot_token.is_empty() {
+        "Sent with the server's APW_TELEGRAM_* bot. Check its chat."
+    } else {
+        "Sent. Check the chat."
+    })
 }
 
 #[cfg(test)]

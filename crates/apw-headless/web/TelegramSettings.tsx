@@ -4,8 +4,10 @@
  * it just above the query-route panel, below the Bark settings.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Send } from "lucide-react";
 import { CollapsiblePanel } from "@/components/CollapsiblePanel";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { saveSettings, watcherStore } from "@/lib/store";
@@ -20,6 +22,8 @@ export function TelegramSettings() {
   const saved = (ui.settings as Settings & { telegram?: Telegram }).telegram ?? EMPTY;
   const [draft, setDraft] = useState(saved);
   const [failed, setFailed] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
   useEffect(() => setDraft(saved), [saved]);
 
   const next = { botToken: draft.botToken.trim(), chatId: draft.chatId.trim() };
@@ -31,6 +35,18 @@ export function TelegramSettings() {
     if (half || (next.botToken === saved.botToken && next.chatId === saved.chatId)) return;
     const patch: Partial<Settings> & { telegram: Telegram } = { telegram: next };
     setFailed(!(await saveSettings(patch)));
+  };
+
+  // Tests what is typed, saved or not, so a wrong token never has to be saved.
+  const test = async () => {
+    setTesting(true);
+    try {
+      setResult(await invoke<string>("test_telegram", { telegram: next }));
+    } catch (err) {
+      setResult(`Test failed: ${String(err)}`);
+    } finally {
+      setTesting(false);
+    }
   };
 
   return (
@@ -53,7 +69,7 @@ export function TelegramSettings() {
           className="control-surface select-text"
           placeholder="123456:ABC-DEF..."
           value={draft.botToken}
-          onChange={(event) => setDraft({ ...draft, botToken: event.target.value })}
+          onChange={(event) => { setDraft({ ...draft, botToken: event.target.value }); setResult(null); }}
           onBlur={() => void save()}
         />
       </div>
@@ -68,19 +84,28 @@ export function TelegramSettings() {
           className="control-surface select-text"
           placeholder="-1001234567890 or @channel"
           value={draft.chatId}
-          onChange={(event) => setDraft({ ...draft, chatId: event.target.value })}
+          onChange={(event) => { setDraft({ ...draft, chatId: event.target.value }); setResult(null); }}
           onBlur={() => void save()}
         />
-        <p className="text-[11px] leading-4 break-words text-muted-foreground">
+        <p role="status" className="text-[11px] leading-4 break-words text-muted-foreground">
           {half
-            ? "Fill in both to save."
-            : failed
-              ? "Not saved: the activity log has the reason."
-              : "Send the bot a message first, then read chat.id from " +
-                "api.telegram.org/bot<token>/getUpdates. The test button above sends to Bark and Telegram. " +
-                "Both empty: the server's APW_TELEGRAM_BOT_TOKEN / APW_TELEGRAM_CHAT_ID, if set."}
+            ? "Fill in both to save or test."
+            : (result ??
+              (failed
+                ? "Not saved: the activity log has the reason."
+                : "Send the bot a message first, then read chat.id from " +
+                  "api.telegram.org/bot<token>/getUpdates. " +
+                  "Both empty: the server's APW_TELEGRAM_BOT_TOKEN / APW_TELEGRAM_CHAT_ID, if set."))}
         </p>
       </div>
+      <Button
+        variant="outline"
+        className="mt-3 h-10 w-full rounded-xl border-border/70 bg-background/30"
+        disabled={half || testing}
+        onClick={() => void test()}
+      >
+        <Send aria-hidden="true" /> {testing ? "Sending..." : "Send a test message"}
+      </Button>
     </CollapsiblePanel>
   );
 }

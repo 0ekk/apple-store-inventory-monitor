@@ -139,7 +139,12 @@ Set them in either place:
    empty, so the token never reaches the browser. Setting only one of the
    two makes the monitor exit at startup.
 
-The web UI likewise refuses to save just one of its two fields. Every target
+The panel's **Send a test message** button sends one message with what is
+typed in it, saved or not (or with the environment's bot while both fields
+are empty), and shows Telegram's answer, e.g. `HTTP 401: Unauthorized` for a
+wrong token or `chat not found` for a wrong chat ID. The 监控设置 panel's
+test button tries Bark and Telegram together. The web UI refuses to save just
+one of the two fields. Every target
 alerts the same chat; there is no Telegram counterpart of
 `productBarkUrls`, so use a group to reach several people. As with Bark, a
 failed send is logged and shown in the UI and never changes a stock result.

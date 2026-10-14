@@ -63,6 +63,14 @@ devices. The user asked for a Telegram bot as an additional alert channel.
    text is English, like the rest of the headless-only UI; the token field is
    a password input.
 
+8. **A Telegram-only test button in the panel.** The shared test button
+   ("测试提醒与跳转", upstream `src/`) sends to Bark and Telegram at once, and
+   its log line never mentions Telegram, so users couldn't tell how to check
+   a bot. A new `test_telegram` command sends one message with the panel's
+   current values, saved or not (a wrong token never has to be saved to be
+   tested), using the same page-then-environment resolution as alerts, and
+   the panel shows the result inline.
+
 ## Impact
 
 - New public type `apw_core::notify::Telegram`. `read_capped` takes the
@@ -77,7 +85,10 @@ devices. The user asked for a Telegram bot as an additional alert channel.
   The test button's error now names both options. Startup logs whether the
   environment bot is set and that the page fields take precedence.
 - Web UI: new `crates/apw-headless/web/TelegramSettings.tsx`, rendered by the
-  headless `NetworkSettings.tsx`.
+  headless `NetworkSettings.tsx`, with a "Send a test message" button.
+- New headless-only command `test_telegram` (`{telegram: {botToken,
+  chatId}}`), returning a status string. `AppState::telegram` now takes
+  `&TelegramSettings` so alerts and this test share the resolution.
 - Deploy: `docker-compose.yml` passes both variables through;
   `deploy/k8s/10-apw.yaml` reads them from an optional `apw-telegram`
   Secret. The NetworkPolicy already allows public HTTPS, so no rule changes.
@@ -115,3 +126,13 @@ devices. The user asked for a Telegram bot as an additional alert channel.
     the real Telegram API (`HTTP 401: Unauthorized` for the fake token);
   - `tsc` passes, and a headless Chrome screenshot of the web build shows
     the panel between the Bark settings and the query-route panel.
+- Test button (third change), real binary, `test_telegram`:
+  - a half-filled pair: "set both ... or neither";
+  - nothing in the page or the environment: the "no Telegram bot" error;
+  - a fake page token: the real API's `HTTP 401: Unauthorized`, and no
+    settings file was written;
+  - empty page fields with a fake environment bot: the same 401, so the
+    fallback was used;
+  - clippy, tests, `tsc` and the vite build pass. The success path is covered
+    by the library's unit test; the button's rendering was not checked
+    visually.
