@@ -16,7 +16,7 @@ spec:
     - Egress
 ---
 # DNS, plus HTTPS out to the public internet: the sidecar reaches Apple's
-# site, the monitor reaches the user's Bark push endpoint directly.
+# site, the monitor reaches the user's Bark endpoint and Telegram directly.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

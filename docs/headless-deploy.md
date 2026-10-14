@@ -24,7 +24,7 @@ requests don't look like automation.
 ## Layout
 
 ```
-crates/apw-headless/   Rust binary: watcher + Bark notifications + a thin
+crates/apw-headless/   Rust binary: watcher + Bark/Telegram alerts + a thin
                         HTTP client that talks to the sidecar + web UI server
 crates/apw-headless/web/   Web build of the desktop UI (Tauri API shim)
 camoufox-sidecar/       Python process: owns the one real browser session
@@ -105,12 +105,41 @@ Field notes:
   app uses this to auto-open a browser tab; headless has no browser to open,
   so instead the chosen URL (bag page, education-store bag page, or the
   product page for `"product"`) is embedded as the tappable link in the
-  Bark push.
+  Bark push and the Telegram message.
 - `network.proxies`: optional exit proxies for Apple queries, one
   `scheme://[user:pass@]host:port` string each (`http`, `https` or
   `socks5`; the port must be written out). Every request picks one at
   random; see [Random exit proxies](#random-exit-proxies). The rest of
   `network` (Clash) is desktop-only and ignored here.
+
+## Telegram alerts
+
+Optional, next to Bark. Set both variables on the monitor and every stock
+hit (and the web UI's test button) also sends a Telegram message: title,
+store and model, and the `openOnHit` link on the last line.
+
+- `APW_TELEGRAM_BOT_TOKEN`: the token @BotFather gives you for `/newbot`.
+- `APW_TELEGRAM_CHAT_ID`: where messages go. A bot can't open a chat, so
+  send your bot any message first, then read `chat.id` from
+  `curl https://api.telegram.org/bot<token>/getUpdates`. Group IDs are
+  negative (add the bot to the group first). A public channel can use
+  `@channelname`, with the bot as an admin.
+
+Setting only one of the two makes the monitor exit at startup. Every target
+alerts the same chat; there is no Telegram counterpart of
+`productBarkUrls`, so use a group to reach several people. As with Bark, a
+failed send is logged and shown in the UI and never changes a stock result.
+
+The token stays in the environment (a Secret on Kubernetes) rather than in
+`settings.v2.json`, so the web UI never receives it. To reach Telegram
+through a proxy, set `HTTPS_PROXY=http://host:port` on the monitor; Bark
+pushes use it too, and the plain-HTTP sidecar calls don't. On Kubernetes:
+
+```sh
+kubectl -n apw-monitor create secret generic apw-telegram \
+  --from-literal=token='123456:ABC...' --from-literal=chat-id='-1001234567890'
+kubectl -n apw-monitor rollout restart deploy/apw-monitor
+```
 
 ## Web UI
 
@@ -118,7 +147,7 @@ Set `APW_WEB_PASSWORD` and the monitor also serves the desktop app's own
 interface over HTTP, at `APW_WEB_ADDR` (default `127.0.0.1:8080`). Log in as
 user `admin` with that password. From the UI you can pick region, store and
 model, start or pause the watcher, retry now, change the interval, set the
-default or per-model Bark address, send a test push, refresh the store and
+default or per-model Bark address, send a test alert, refresh the store and
 model lists from Apple, and watch each poll cycle live.
 
 It is the same React code as the desktop app (`src/`), unmodified, except for
@@ -177,12 +206,12 @@ This starts two containers:
   host** — only `monitor` can reach it. Do not expose this port publicly;
   it has no authentication of its own.
 - `monitor`: the Rust binary, keeping `./data/settings.v2.json`
-  (bind-mounted from the host), pushing Bark alerts on hits, and serving the
+  (bind-mounted from the host), sending Bark/Telegram alerts on hits, and serving the
   web UI on host port `127.0.0.1:8080`. From your own machine:
   `ssh -L 8080:127.0.0.1:8080 your-vps`, then open http://127.0.0.1:8080.
 
 Logs (`docker compose logs -f monitor`) print one line per poll cycle and
-one line per stock hit; Bark push failures go to stderr without stopping the
+one line per stock hit; alert failures go to stderr without stopping the
 watcher, exactly like the desktop app's behavior of never letting a
 notification failure affect the stock verdict.
 
@@ -217,8 +246,8 @@ instead; `SIDECAR_PROXY` then only covers requests when the list is empty.
 
 The sidecar log's first line says which default route is in use
 (`apple traffic via http://host:port` or `via direct connection`). Only the
-browser uses the proxy. Bark pushes and the web UI's catalog refresh still
-go out directly. A Clash instance on your own machine is reachable from a
+browser uses the proxy. Bark pushes, Telegram messages and the web UI's
+catalog refresh still go out directly. A Clash instance on your own machine is reachable from a
 local kind cluster only if Clash allows LAN connections; use the kind
 network gateway as the host, e.g. `http://172.18.0.1:7890`. Camoufox logs a
 `LeakWarning` recommending `geoip=True` when a proxy is set. That option
@@ -258,7 +287,7 @@ and cookies: only the first request on a proxy pays for a page load.
 - No sound alert, no tray icon, no in-app update check — none of those
   exist on a server.
 - No "open browser tab on hit" — the destination URL rides along in the
-  Bark push instead.
+  Bark push and the Telegram message instead.
 - Catalog refresh needs the web UI. The store and model lists start from
   the embedded snapshot the desktop app ships with; the UI's refresh button
   updates them from Apple and caches the result in `catalog-cache/` next to

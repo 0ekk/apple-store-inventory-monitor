@@ -40,7 +40,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 
-use crate::{AppState, apple_lookup, send_bark, target_open_url, target_purchase_url};
+use crate::{AppState, apple_lookup, send_alert, target_open_url, target_purchase_url};
 
 pub const USERNAME: &str = "admin";
 
@@ -371,16 +371,20 @@ async fn refresh_products(app: &AppState, args: &Value) -> Result<Value, String>
     reply(json!({ "products": products, "stores": stores, "errors": errors }))
 }
 
-/// Bark only: there is no speaker, and opening a page happens in the Bark
-/// notification's link instead of on this machine.
+/// Bark and Telegram only: there is no speaker, and opening a page happens
+/// in the alert's link instead of on this machine.
 async fn test_notify(app: &AppState) -> Result<Value, String> {
     let settings = app.settings_snapshot();
     let first = settings.targets.first();
     let bark_url = first.map_or(settings.bark_url.as_str(), |target| {
         settings.bark_url_for(target)
     });
-    if bark_url.trim().is_empty() {
-        return Err("set a Bark URL first: Bark is the only alert channel in headless mode".into());
+    if bark_url.trim().is_empty() && !app.telegram.is_configured() {
+        return Err(
+            "set a Bark URL (or APW_TELEGRAM_BOT_TOKEN and APW_TELEGRAM_CHAT_ID) first: \
+             they are the alert channels in headless mode"
+                .into(),
+        );
     }
     let mut notification = Notification::new(
         "Notification test (not a stock hit)",
@@ -391,7 +395,7 @@ async fn test_notify(app: &AppState) -> Result<Value, String> {
     {
         notification = notification.with_url(url);
     }
-    send_bark(app, bark_url, &notification).await?;
+    send_alert(app, bark_url, &notification).await?;
     reply(())
 }
 

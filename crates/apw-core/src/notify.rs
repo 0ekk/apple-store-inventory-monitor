@@ -32,6 +32,10 @@ use rodio::Source;
 use rodio::buffer::SamplesBuffer;
 use rodio::source::UniformSourceIterator;
 
+// Telegram lives in its own file so upstream changes to this one merge cleanly.
+mod telegram;
+pub use telegram::Telegram;
+
 /// 内嵌的提示音。
 ///
 /// 内嵌而不是运行时读文件：上游把 mp3 放在可执行文件旁边，用户换个目录启动就
@@ -235,7 +239,7 @@ impl Notifier for Bark {
             })?;
 
         let status = resp.status();
-        let body = read_capped(&mut resp, BARK_MAX_BODY).await?;
+        let body = read_capped(&mut resp, BARK_MAX_BODY, BARK).await?;
 
         // 上游拿到响应后连状态码都不看：设备 key 写错、服务器返回 400 时用户
         // 毫无察觉，一直以为推送生效了，真到货那天才发现什么也没收到。
@@ -260,7 +264,11 @@ impl Notifier for Bark {
 }
 
 /// 分块读取 Bark 的响应体，读满上限就停手。
-async fn read_capped(resp: &mut reqwest::Response, max: usize) -> Result<Vec<u8>, NotifyError> {
+async fn read_capped(
+    resp: &mut reqwest::Response,
+    max: usize,
+    channel: &str,
+) -> Result<Vec<u8>, NotifyError> {
     let mut body = Vec::new();
     while body.len() < max {
         match resp.chunk().await {
@@ -270,9 +278,10 @@ async fn read_capped(resp: &mut reqwest::Response, max: usize) -> Result<Vec<u8>
             }
             Ok(None) => break,
             Err(e) => {
+                // without_url: the URL holds the Bark key or the bot token.
                 return Err(NotifyError::Transport {
-                    channel: BARK.to_string(),
-                    detail: format!("读取响应失败：{e}"),
+                    channel: channel.to_string(),
+                    detail: format!("读取响应失败：{}", e.without_url()),
                 });
             }
         }
