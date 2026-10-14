@@ -1,9 +1,10 @@
 /**
  * Headless stand-in for `src/components/NetworkSettings.tsx` (`vite.config.ts`
- * next to this file aliases it in). The desktop panel drives Clash, which a
- * server doesn't have; here the query route is a list of exit proxies, and
- * the server picks one at random for every Apple request. This is also the
- * only headless slot in the sidebar, so it renders the Telegram panel too.
+ * next to this file aliases it in). It renders the desktop query-route panel
+ * itself (system / pinned node / Clash rotation, served by the headless
+ * server), plus the headless-only panels: Telegram above it, and below it the
+ * exit-proxy list the server picks from at random in system mode. This is the
+ * only headless slot in the sidebar.
  */
 import { useEffect, useState } from "react";
 import { Globe } from "lucide-react";
@@ -11,6 +12,8 @@ import { CollapsiblePanel } from "@/components/CollapsiblePanel";
 import { Label } from "@/components/ui/label";
 import { saveSettings } from "@/lib/store";
 import type { NetworkSettings as DesktopNetwork } from "@/lib/types";
+// A relative path, which the "@/components/NetworkSettings" alias doesn't match.
+import { NetworkSettings as RoutePanel } from "../../../src/components/NetworkSettings";
 import { TelegramSettings } from "./TelegramSettings";
 
 /** `proxies` is headless-only, so the shared desktop type doesn't list it. */
@@ -23,14 +26,23 @@ function entries(text: string): string[] {
     .filter(Boolean);
 }
 
-export function NetworkSettings({ network }: { network: Network; running: boolean; route: string | null }) {
+export function NetworkSettings({
+  network,
+  running,
+  route,
+}: {
+  network: Network;
+  running: boolean;
+  route: string | null;
+}) {
   const saved = (network.proxies ?? []).join("\n");
   const [draft, setDraft] = useState(saved);
   const [failed, setFailed] = useState(false);
   useEffect(() => setDraft(saved), [saved]);
 
   const count = network.proxies?.length ?? 0;
-  const summary = count > 0 ? `Random of ${count} proxies` : "Sidecar default";
+  const summary =
+    network.mode !== "system" ? "Off (Clash route)" : count > 0 ? `Random of ${count} proxies` : "Sidecar default";
 
   const save = async () => {
     const proxies = entries(draft);
@@ -42,11 +54,12 @@ export function NetworkSettings({ network }: { network: Network; running: boolea
   return (
     <>
       <TelegramSettings />
+      <RoutePanel network={network} running={running} route={route} />
       <CollapsiblePanel
-        id="network"
+        id="proxies"
         icon={<Globe className="size-4" />}
-        title="Query route"
-        subtitle="Exit proxies for Apple queries"
+        title="Exit proxies"
+        subtitle="System-proxy route mode only"
         summary={summary}
       >
         <div className="field-group">
@@ -68,7 +81,8 @@ export function NetworkSettings({ network }: { network: Network; running: boolea
           <p className="text-[11px] leading-4 break-words text-muted-foreground">
             {failed
               ? "Not saved: the activity log has the reason."
-              : "One per line: http://, https:// or socks5://, with an explicit port. Every request uses a random one, " +
+              : "Used only in the query route's first (system proxy) mode; the Clash modes go through the Clash proxy port. " +
+                "One per line: http://, https:// or socks5://, with an explicit port. Every request uses a random one, " +
                 "each with its own warmed browser session. socks5 cannot carry a username/password (browser limit). " +
                 "Empty: the sidecar's SIDECAR_PROXY, or a direct connection."}
           </p>

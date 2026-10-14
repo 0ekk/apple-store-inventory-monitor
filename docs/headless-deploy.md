@@ -109,11 +109,17 @@ Field notes:
 - `telegram`: `{"botToken": "...", "chatId": "..."}`, both set or both
   empty. Empty falls back to the environment; see
   [Telegram alerts](#telegram-alerts). The desktop app ignores it.
-- `network.proxies`: optional exit proxies for Apple queries, one
-  `scheme://[user:pass@]host:port` string each (`http`, `https` or
-  `socks5`; the port must be written out). Every request picks one at
-  random; see [Random exit proxies](#random-exit-proxies). The rest of
-  `network` (Clash) is desktop-only and ignored here.
+- `network.mode`: `"system" | "pinned" | "clash"`, the desktop app's query
+  route. `system` uses `network.proxies` below (or `SIDECAR_PROXY`, or a
+  direct connection); `pinned` and `clash` send Apple queries through a
+  Clash/mihomo port; see [Clash node rotation](#clash-node-rotation).
+- `network.clash`: `{"controller", "secret", "proxyPort", "group",
+  "nodeFilter", "pinnedNode"}`, as in the desktop app. Only read in the
+  `pinned` and `clash` modes.
+- `network.proxies`: optional exit proxies for Apple queries in the
+  `system` mode, one `scheme://[user:pass@]host:port` string each (`http`,
+  `https` or `socks5`; the port must be written out). Every request picks
+  one at random; see [Random exit proxies](#random-exit-proxies).
 
 ## Telegram alerts
 
@@ -169,8 +175,8 @@ default or per-model Bark address, set a Telegram bot, send a test alert, refres
 model lists from Apple, and watch each poll cycle live.
 
 It is the same React code as the desktop app (`src/`), unmodified, except for
-one panel slot: the web build replaces the Clash "query route" panel with a
-[Telegram](#telegram-alerts) panel and a
+one panel slot: the web build renders a [Telegram](#telegram-alerts) panel,
+then the desktop's own 查询线路 (query route) panel, then a
 [random proxy list](#random-exit-proxies)
 (`crates/apw-headless/web/NetworkSettings.tsx`, `TelegramSettings.tsx`). It also swaps Tauri's
 `invoke`/`listen` for HTTP calls and a server-sent event
@@ -262,6 +268,8 @@ exit IP:
 
 For more than one exit IP, use a [proxy list](#random-exit-proxies)
 instead; `SIDECAR_PROXY` then only covers requests when the list is empty.
+To swap exit IPs automatically when Apple blocks one, use
+[Clash node rotation](#clash-node-rotation).
 
 The sidecar log's first line says which default route is in use
 (`apple traffic via http://host:port` or `via direct connection`). Only the
@@ -276,8 +284,10 @@ proxy's location.
 
 ## Random exit proxies
 
-The web UI's **Query route** panel (or `network.proxies` in the settings
-file) holds a list of exit proxies, one per line. For every Apple request
+The web UI's **Exit proxies** panel (or `network.proxies` in the settings
+file) holds a list of exit proxies, one per line. It only applies while the
+query route (`network.mode`) is 跟随系统代理 (`system`); the Clash modes
+ignore it. For every Apple request
 (pickup and delivery) the monitor picks one at random and the sidecar runs
 the request from a page that goes through that proxy. Apple's bot check is
 passed per exit IP, so each proxy and region pair keeps its own warmed page
@@ -301,6 +311,81 @@ and cookies: only the first request on a proxy pays for a page load.
 - Kubernetes: allow every proxy's address and port in
   `01-networkpolicy.yaml`, as for `SIDECAR_PROXY`.
 
+## Clash node rotation
+
+The web UI's 查询线路 panel works as in the desktop app. Pick
+「指定节点」 (`pinned`) to send every Apple query through one node, or
+「Clash 节点轮换」 (`clash`) to rotate: a node Apple rejects (HTTP 541 or
+a rate limit) cools down for 5, 10, 20, then 30 minutes and the next node
+takes over, a node that can't connect is skipped for a minute, and when
+every node is cooling the watcher waits instead of querying. The panel's
+current-node picker, 检查线路 button and per-cycle log line
+(`Clash 节点 … （本轮切换 N 次）`) behave as on the desktop.
+
+You need a Clash/mihomo instance with a dedicated listener whose traffic goes
+to one `select` group of nodes, as the desktop's 配置教程 sets up. Two
+headless-specific rules:
+
+- **One host for both ports.** The monitor calls the controller
+  (`network.clash.controller`), and the browser in the sidecar connects to
+  the same host on `proxyPort`. That host must resolve, and both ports must
+  be reachable, from both containers.
+- **Listen beyond loopback when the containers differ.** The desktop guide's
+  script sets `listen: "127.0.0.1"` on the listener. That only works when
+  mihomo shares the network namespace with the sidecar (the Kubernetes pod
+  below). In docker compose, mihomo is its own container, so the listener
+  and the external controller must listen on `0.0.0.0` with `allow-lan:
+  true`, and you should set a `secret`.
+
+A minimal mihomo config for headless use:
+
+```yaml
+allow-lan: true                     # compose only
+external-controller: 0.0.0.0:9097   # 127.0.0.1:9097 inside the k8s pod
+secret: "change-me"                 # goes into network.clash.secret
+proxy-providers:
+  airport:
+    type: http
+    url: "https://your-subscription-url"
+    interval: 86400
+    path: ./providers/airport.yaml
+    health-check: { enable: false }
+proxy-groups:
+  - { name: 果到雷达, type: select, proxies: [DIRECT], use: [airport] }
+listeners:
+  - name: apple-store-monitor
+    type: mixed
+    port: 7899
+    listen: 0.0.0.0                 # 127.0.0.1 inside the k8s pod
+    proxy: 果到雷达
+rules:
+  - MATCH,DIRECT
+```
+
+- **docker compose:** add a `mihomo` service with that config, then set the
+  controller to `http://mihomo:9097` in the panel. The sidecar then uses
+  `http://mihomo:7899`.
+- **Kubernetes:** run mihomo as a third container in the pod and keep the
+  controller at `http://127.0.0.1:9097`. The pod runs under the
+  "restricted" Pod Security Standard, so mihomo must run as non-root with no
+  TUN and a writable directory (an `emptyDir`) for its provider cache. The
+  egress policy only allows public IPs on port 443, so add a rule to
+  `01-networkpolicy.yaml` for the nodes' addresses and ports.
+
+Notes:
+
+- 检查线路's port check connects from the monitor's container. Within a
+  pod, or with a shared compose network, that matches what the sidecar
+  sees.
+- The browser keeps one warmed page per node (the node name rides along in
+  the proxy URL's fragment, which the sidecar keys pages on). Switching
+  back to a node reuses its page while it's still open; the
+  `SIDECAR_MAX_PAGES` cap applies as for proxy lists.
+- If the browser can't reach the proxy port at all (connection refused,
+  unknown host), the UI reports a setup error instead of rotating nodes.
+- Only Apple pickup and delivery queries go through Clash. Bark, Telegram
+  and the web UI's catalog refresh go out directly.
+
 ## Known differences from the desktop app
 
 - No sound alert, no tray icon, no in-app update check — none of those
@@ -311,10 +396,9 @@ and cookies: only the first request on a proxy pays for a page load.
   the embedded snapshot the desktop app ships with; the UI's refresh button
   updates them from Apple and caches the result in `catalog-cache/` next to
   the settings file.
-- No Clash route rotation. The desktop app (v1.0.18+) can rotate Clash
-  nodes when Apple blocks an exit IP; the `network` settings that drive it
-  are read but ignored here, and the web UI's Query route panel shows a
-  [random proxy list](#random-exit-proxies) instead.
+- Clash routes need a Clash/mihomo the sidecar can reach on the network
+  (the desktop assumes `127.0.0.1`), and the catalog refresh doesn't go
+  through Clash; see [Clash node rotation](#clash-node-rotation).
 - Delivery quotes (mainland China only, as in the desktop app) work the
   same way: set a province/city/district in the web UI and the "预计送货"
   column fills in. They are fetched through the same browser session after

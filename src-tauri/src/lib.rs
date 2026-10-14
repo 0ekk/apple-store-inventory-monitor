@@ -23,8 +23,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use tauri_plugin_updater::UpdaterExt;
 
 mod chromium_fetcher;
-mod clash;
-mod route_pool;
+use apw_core::clash;
 use chromium_fetcher::AppleChromiumFetcher;
 
 /// 前端事件通道名。前端用 `listen("watcher://event", ...)` 订阅。

@@ -1,9 +1,9 @@
 // Web build of the desktop UI for the headless server. Run from the repo root:
 //   pnpm exec vite build --config crates/apw-headless/web/vite.config.ts
 // Reuses the desktop config unchanged and only swaps the Tauri modules for
-// tauri-shim.ts, plus the query-route panel for NetworkSettings.tsx (the
-// server rotates exit proxies instead of driving Clash; it also renders the
-// headless Telegram panel). Other upstream UI changes need no edits here.
+// tauri-shim.ts, plus the query-route panel for NetworkSettings.tsx (which
+// renders the desktop panel, then the headless Telegram and exit-proxy
+// panels). Other upstream UI changes need no edits here.
 import path from "node:path";
 import { defineConfig, mergeConfig, type ConfigEnv } from "vite";
 import desktopConfig from "../../../vite.config";

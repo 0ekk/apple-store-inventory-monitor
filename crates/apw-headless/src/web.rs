@@ -7,8 +7,8 @@
 //! to the server-sent event stream at `GET /api/v1/events`. This module is the
 //! server half: the same command names and argument shapes as the
 //! `#[tauri::command]`s in `src-tauri/src/lib.rs`, calling the same `apw-core`
-//! functions. Commands for things a server doesn't have (sound, Clash, the
-//! updater) answer with an error the UI shows in its log.
+//! functions. Commands for things a server doesn't have (sound, the updater)
+//! answer with an error the UI shows in its log.
 //!
 //! Every request, static files included, needs HTTP Basic auth. The listener
 //! is loopback-only by default (reached with `kubectl port-forward` or an SSH
@@ -247,11 +247,15 @@ async fn run_command(app: &AppState, name: &str, args: &Value) -> Option<Result<
         "list_delivery_localities" => list_delivery_localities(app, args).await,
         "list_watch_band_choices" => list_watch_band_choices(app, args).await,
         "list_watch_band_sizes" => list_watch_band_sizes(app, args).await,
-        "test_clash_route" | "list_clash_nodes" | "select_clash_node" => Err(
-            "not available in headless mode: Clash route rotation is not ported \
-             (use the random proxy list instead)"
-                .into(),
-        ),
+        "test_clash_route" => match arg(args, "clash") {
+            Ok(clash) => crate::clash_route::test_route(clash).await.and_then(reply),
+            Err(err) => Err(err),
+        },
+        "list_clash_nodes" => app.fetcher.list_routes().await.and_then(reply),
+        "select_clash_node" => match arg::<String>(args, "node") {
+            Ok(node) => app.fetcher.select_route(&node).await.and_then(reply),
+            Err(err) => Err(err),
+        },
         _ => return None,
     };
     Some(result)
@@ -330,6 +334,8 @@ async fn set_interval(app: &AppState, args: &Value) -> Result<Value, String> {
 /// Desktop `refresh_catalog` without the Clash detours: stores, then the
 /// selected category's product pages, both over plain HTTPS (the catalog
 /// pages aren't behind the bot check the pickup endpoint is).
+// ponytail: never routed through Clash, even in the Clash route modes; send it
+// through `clash_route::clash_proxy_url` if catalog refreshes get blocked.
 async fn refresh_products(app: &AppState, args: &Value) -> Result<Value, String> {
     let locale: String = arg(args, "locale")?;
     let category: Option<Category> = arg(args, "category")?;

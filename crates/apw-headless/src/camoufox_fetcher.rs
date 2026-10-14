@@ -19,10 +19,16 @@ use std::hash::{BuildHasher, RandomState};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use apw_core::apple::{ApiError, DeliveryInfo, Fetcher, StoreAvailability, parse_pickup_message};
+use apw_core::apple::{
+    ApiError, CycleStats, DeliveryInfo, Fetcher, ScheduleHint, StoreAvailability,
+    parse_pickup_message,
+};
+use apw_core::config::{NetworkMode, NetworkSettings};
 use apw_core::model::{DeliveryRegion, Region, Target};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::clash_route::{self, ClashRoute, RouteInfo, RouteList, is_node_failure};
 
 /// The sidecar may need to load a fresh page and wait out Apple's challenge,
 /// which the desktop app allows up to 50s for. Give the round trip room for
@@ -62,7 +68,8 @@ struct PickupRequest<'a> {
     /// and that must not cost the pickup session.
     keep_session_on_block: bool,
     /// Exit proxy for this request; the sidecar keeps a warmed page per
-    /// proxy and region. Omitted: the sidecar's own default (SIDECAR_PROXY).
+    /// proxy string and region. Omitted: the sidecar's own default
+    /// (SIDECAR_PROXY).
     #[serde(skip_serializing_if = "Option::is_none")]
     proxy: Option<&'a str>,
 }
@@ -111,6 +118,7 @@ fn proxy_label(raw: &str) -> String {
         |mut url| {
             let _ = url.set_username("");
             let _ = url.set_password(None);
+            url.set_fragment(None);
             url.as_str().trim_end_matches('/').to_string()
         },
     )
@@ -132,8 +140,13 @@ pub struct CamoufoxFetcher {
     http: reqwest::Client,
     sidecar_url: String,
     delivery: Arc<Mutex<DeliveryState>>,
-    /// `network.proxies` from the settings; shared with every clone.
-    proxies: Arc<RwLock<Vec<String>>>,
+    /// `network` from the settings; shared with every clone.
+    network: Arc<RwLock<NetworkSettings>>,
+    /// Pinned/Clash mode: held across a pickup's whole switch-and-retry loop
+    /// and its delivery requests, so they leave through the node they were
+    /// prepared for. Clash mode thus queries one store at a time, like the
+    /// desktop app; system mode never takes it for a query.
+    route: Arc<tokio::sync::Mutex<ClashRoute>>,
 }
 
 /// Delivery quotes are cached per target and address, like the desktop
@@ -252,12 +265,54 @@ impl CamoufoxFetcher {
             http,
             sidecar_url,
             delivery: Arc::default(),
-            proxies: Arc::default(),
+            network: Arc::default(),
+            route: Arc::default(),
         })
     }
 
-    pub fn set_proxies(&self, proxies: Vec<String>) {
-        *self.proxies.write().unwrap_or_else(|e| e.into_inner()) = proxies;
+    pub fn set_network(&self, network: NetworkSettings) {
+        *self.network.write().unwrap_or_else(|e| e.into_inner()) = network;
+    }
+
+    fn network(&self) -> NetworkSettings {
+        self.network
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The route state, brought up to date with the settings.
+    async fn route(&self) -> tokio::sync::MutexGuard<'_, ClashRoute> {
+        let network = self.network();
+        let mut route = self.route.lock().await;
+        route.set_network(network);
+        route
+    }
+
+    /// The Clash group's nodes, delays and cooldowns for the UI.
+    pub async fn list_routes(&self) -> Result<RouteList, String> {
+        let (nodes, delays) = clash_route::list_routes(&self.network()).await?;
+        // ponytail: cooldowns are read only when no pickup holds the route;
+        // otherwise every node shows as not resting, rather than the picker
+        // waiting minutes for the lock.
+        let route = self.route.try_lock().ok();
+        Ok(RouteList {
+            now: nodes.now,
+            nodes: nodes
+                .nodes
+                .into_iter()
+                .map(|name| RouteInfo {
+                    delay: delays.get(&name).copied(),
+                    resting: route.as_ref().is_some_and(|route| route.is_resting(&name)),
+                    name,
+                })
+                .collect(),
+        })
+    }
+
+    /// The UI picked a Clash node.
+    pub async fn select_route(&self, node: &str) -> Result<Option<u32>, String> {
+        self.route().await.select_manually(node).await
     }
 
     /// A uniformly random entry, `None` when the list is empty.
@@ -265,7 +320,8 @@ impl CamoufoxFetcher {
     // share of requests until removed. Add a cooldown like the desktop
     // RoutePool if that shows up in practice.
     fn pick_proxy(&self) -> Option<String> {
-        let proxies = self.proxies.read().unwrap_or_else(|e| e.into_inner());
+        let network = self.network.read().unwrap_or_else(|e| e.into_inner());
+        let proxies = &network.proxies;
         if proxies.is_empty() {
             return None;
         }
@@ -286,8 +342,8 @@ impl CamoufoxFetcher {
         region: &'static Region,
         url: String,
         keep_session_on_block: bool,
+        proxy: Option<&str>,
     ) -> Result<(u16, String), ApiError> {
-        let proxy = self.pick_proxy();
         let mut headers = BTreeMap::new();
         headers.insert(
             "Accept",
@@ -305,10 +361,9 @@ impl CamoufoxFetcher {
             },
             fetch: FetchSpec { url, headers },
             keep_session_on_block,
-            proxy: proxy.as_deref(),
+            proxy,
         };
         let via = proxy
-            .as_deref()
             .map(|proxy| format!(" (via {})", proxy_label(proxy)))
             .unwrap_or_default();
 
@@ -345,6 +400,7 @@ impl CamoufoxFetcher {
         region: &'static Region,
         targets: &[Target],
         location: &DeliveryRegion,
+        proxy: Option<&str>,
     ) {
         // Regular products: one request for every part still due. Mark them
         // attempted before sending, so concurrent store queries in the same
@@ -367,7 +423,9 @@ impl CamoufoxFetcher {
         parts.sort_unstable();
         parts.dedup();
         if !parts.is_empty() {
-            let result = self.fetch_product_delivery(region, &parts, location).await;
+            let result = self
+                .fetch_product_delivery(region, &parts, location, proxy)
+                .await;
             let mut state = self.delivery_state();
             match result {
                 Ok(quotes) => {
@@ -395,7 +453,9 @@ impl CamoufoxFetcher {
                 }
                 state.attempts.insert(DeliveryKey::new(target, location));
             }
-            let result = self.fetch_watch_delivery(region, target, location).await;
+            let result = self
+                .fetch_watch_delivery(region, target, location, proxy)
+                .await;
             let mut state = self.delivery_state();
             match result {
                 Ok(message) => state.store(
@@ -422,12 +482,13 @@ impl CamoufoxFetcher {
         region: &'static Region,
         parts: &[String],
         location: &DeliveryRegion,
+        proxy: Option<&str>,
     ) -> Result<BTreeMap<String, DeliveryInfo>, ApiError> {
         let url = url_with_pairs(
             &region.delivery_message_url(),
             &delivery_query_pairs(parts, location),
         );
-        let (status, body) = self.sidecar_fetch(region, url, true).await?;
+        let (status, body) = self.sidecar_fetch(region, url, true, proxy).await?;
         match status {
             200 => parse_product_delivery(body.as_bytes()),
             403 | 541 => Err(ApiError::Blocked(format!("HTTP {status}"))),
@@ -444,6 +505,7 @@ impl CamoufoxFetcher {
         region: &'static Region,
         target: &Target,
         location: &DeliveryRegion,
+        proxy: Option<&str>,
     ) -> Result<Option<String>, ApiError> {
         let non_empty = |part: &Option<String>| {
             part.as_deref()
@@ -469,7 +531,7 @@ impl CamoufoxFetcher {
             ("district", location.district.clone()),
         ];
         let url = url_with_pairs(&region.delivery_message_url(), &pairs);
-        let (status, body) = self.sidecar_fetch(region, url, true).await?;
+        let (status, body) = self.sidecar_fetch(region, url, true, proxy).await?;
         match status {
             200 => parse_delivery_display_name(body.as_bytes()),
             403 | 541 => Err(ApiError::Blocked(format!("HTTP {status}"))),
@@ -514,9 +576,86 @@ impl CamoufoxFetcher {
     }
 }
 
+impl CamoufoxFetcher {
+    /// One pickup request through `proxy`, Apple's answer mapped to a result.
+    async fn pickup_once(
+        &self,
+        region: &'static Region,
+        store_number: &str,
+        url: String,
+        proxy: Option<&str>,
+    ) -> Result<StoreAvailability, ApiError> {
+        let (status, body) = self.sidecar_fetch(region, url, false, proxy).await?;
+        match status {
+            200 => {
+                let bytes = body.as_bytes();
+                if bytes
+                    .iter()
+                    .find(|b| !b.is_ascii_whitespace())
+                    .is_some_and(|b| *b != b'{' && *b != b'[')
+                {
+                    return Err(ApiError::Blocked("HTTP 200 but body is not JSON".into()));
+                }
+                parse_pickup_message(bytes, store_number)
+            }
+            403 | 541 => Err(ApiError::Blocked(format!("HTTP {status}"))),
+            429 => Err(ApiError::RateLimited("HTTP 429".into())),
+            // The sidecar reports an in-page fetch() exception as status 0
+            // with the exception text as the body.
+            0 => Err(ApiError::Transport(format!("in-page fetch failed: {body}"))),
+            // Upstream treats 5xx as a transient Apple-side fault, not rate
+            // limiting, so it doesn't trigger the rate-limit protection path.
+            s if s >= 500 => Err(ApiError::Transport(format!(
+                "Apple service temporarily unavailable: HTTP {s}"
+            ))),
+            s => Err(ApiError::Transport(format!("HTTP {s}"))),
+        }
+    }
+
+    /// Pinned/Clash mode, the desktop `fetch_pickup` loop: prepare the node,
+    /// ask, and on a refusal or a dead node switch and ask again, until an
+    /// answer, no usable node, or too many refusals in a row. Returns the
+    /// exit the answer came through.
+    async fn pickup_via_clash(
+        &self,
+        route: &mut ClashRoute,
+        region: &'static Region,
+        store_number: &str,
+        url: &str,
+    ) -> Result<(StoreAvailability, String), ApiError> {
+        let mut attempts = 0usize;
+        loop {
+            let proxy = route.prepare(region).await?;
+            let result = self
+                .pickup_once(region, store_number, url.to_string(), Some(&proxy))
+                .await;
+            attempts += 1;
+            let switch = match &result {
+                Err(ApiError::Blocked(_) | ApiError::RateLimited(_)) => route.rejected(region),
+                Err(error) if is_node_failure(error) => route.unreachable(region),
+                Err(ApiError::Transport(_)) => false,
+                // Apple answered through this node, even if the answer is
+                // unusable (schema drift, no pickup at this store).
+                _ => {
+                    route.succeeded(region);
+                    false
+                }
+            };
+            // `max_attempts` only after `prepare`, which loads the node list.
+            if switch && attempts < route.max_attempts() {
+                continue;
+            }
+            return result
+                .map(|availability| (availability, proxy))
+                .map_err(|error| route.explain(error));
+        }
+    }
+}
+
 impl Fetcher for CamoufoxFetcher {
     async fn begin_cycle(&self) {
         self.delivery_state().begin_cycle();
+        self.route().await.begin_cycle();
     }
 
     async fn cached_delivery(
@@ -525,6 +664,23 @@ impl Fetcher for CamoufoxFetcher {
         location: Option<&DeliveryRegion>,
     ) -> Option<DeliveryInfo> {
         self.delivery_state().cached(target, location?)
+    }
+
+    /// Request counts aren't tracked here (the sidecar throttles); only the
+    /// route line.
+    async fn cycle_stats(&self) -> CycleStats {
+        CycleStats {
+            route: self.route().await.summary(),
+            ..CycleStats::default()
+        }
+    }
+
+    async fn schedule_hint(&self, locales: &[String]) -> ScheduleHint {
+        self.route().await.schedule_hint(locales)
+    }
+
+    async fn retry_now(&self) {
+        self.route().await.retry_now();
     }
 
     async fn pickup_message(
@@ -544,39 +700,32 @@ impl Fetcher for CamoufoxFetcher {
         }
         let parts = Self::query_parts(targets);
         let url = Self::build_pickup_url(region, store_number, &parts);
-        let (status, body) = self.sidecar_fetch(region, url, false).await?;
 
-        match status {
-            200 => {
-                let bytes = body.as_bytes();
-                if bytes
-                    .iter()
-                    .find(|b| !b.is_ascii_whitespace())
-                    .is_some_and(|b| *b != b'{' && *b != b'[')
-                {
-                    return Err(ApiError::Blocked("HTTP 200 but body is not JSON".into()));
-                }
-                let availability = parse_pickup_message(bytes, store_number)?;
-                // Same place as the desktop app: only after pickup succeeded,
-                // reusing the session that just proved to work. The watcher
-                // merges the cached quotes into each row itself.
-                if let Some(location) = delivery_region {
-                    self.refresh_delivery(region, targets, location).await;
-                }
-                Ok(availability)
+        // Same place as the desktop app: delivery only after pickup succeeded,
+        // through the exit that just proved to work. The watcher merges the
+        // cached quotes into each row itself.
+        if self.network().mode == NetworkMode::System {
+            let proxy = self.pick_proxy();
+            let availability = self
+                .pickup_once(region, store_number, url, proxy.as_deref())
+                .await?;
+            if let Some(location) = delivery_region {
+                self.refresh_delivery(region, targets, location, proxy.as_deref())
+                    .await;
             }
-            403 | 541 => Err(ApiError::Blocked(format!("HTTP {status}"))),
-            429 => Err(ApiError::RateLimited("HTTP 429".into())),
-            // The sidecar reports an in-page fetch() exception as status 0
-            // with the exception text as the body.
-            0 => Err(ApiError::Transport(format!("in-page fetch failed: {body}"))),
-            // Upstream treats 5xx as a transient Apple-side fault, not rate
-            // limiting, so it doesn't trigger the rate-limit protection path.
-            s if s >= 500 => Err(ApiError::Transport(format!(
-                "Apple service temporarily unavailable: HTTP {s}"
-            ))),
-            s => Err(ApiError::Transport(format!("HTTP {s}"))),
+            return Ok(availability);
         }
+        let mut route = self.route().await;
+        let (availability, proxy) = self
+            .pickup_via_clash(&mut route, region, store_number, &url)
+            .await?;
+        // Still under the route lock, so no other query switches the node
+        // meanwhile. `sidecar_fetch` never takes the lock itself.
+        if let Some(location) = delivery_region {
+            self.refresh_delivery(region, targets, location, Some(&proxy))
+                .await;
+        }
+        Ok(availability)
     }
 }
 
@@ -754,7 +903,10 @@ mod tests {
         let fetcher = CamoufoxFetcher::new("http://127.0.0.1:1".into()).unwrap();
         assert_eq!(fetcher.pick_proxy(), None);
         let list = ["http://a:1", "http://b:1", "socks5://c:1"].map(String::from);
-        fetcher.clone().set_proxies(list.to_vec());
+        fetcher.clone().set_network(NetworkSettings {
+            proxies: list.to_vec(),
+            ..NetworkSettings::default()
+        });
         let picked: HashSet<String> = (0..200).filter_map(|_| fetcher.pick_proxy()).collect();
         assert_eq!(picked, HashSet::from(list));
     }

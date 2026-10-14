@@ -21,7 +21,9 @@
 pub mod apple;
 pub mod apple_catalog;
 pub mod catalog;
+pub mod clash;
 pub mod config;
 pub mod model;
 pub mod notify;
+pub mod route_pool;
 pub mod watcher;

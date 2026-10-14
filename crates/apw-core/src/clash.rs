@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use apw_core::config::ClashSettings;
+use crate::config::ClashSettings;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 

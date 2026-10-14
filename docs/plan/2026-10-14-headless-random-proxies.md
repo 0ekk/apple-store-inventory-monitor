@@ -3,6 +3,10 @@
 Builds on `2026-09-14-camoufox-headless-port.md` and
 `2026-10-12-headless-web-ui.md`.
 
+Later change: `2026-10-14-headless-clash-routes.md` brought the desktop
+query-route panel back. The proxy list now applies only in the `system`
+route mode and sits in its own "Exit proxies" panel.
+
 ## Rationale
 
 Apple rate-limits and blocks the pickup endpoint per exit IP (HTTP 541).

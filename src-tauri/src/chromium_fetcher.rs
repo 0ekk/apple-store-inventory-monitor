@@ -28,8 +28,8 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-use crate::clash::ClashController;
-use crate::route_pool::RoutePool;
+use apw_core::clash::ClashController;
+use apw_core::route_pool::RoutePool;
 
 const CHROME_START_TIMEOUT: Duration = Duration::from_secs(12);
 const DEVTOOLS_SOCKET_TIMEOUT: Duration = Duration::from_secs(10);

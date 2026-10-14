@@ -119,7 +119,8 @@ an ordinary merge.
   - k8s users move their settings onto the PVC (documented `kubectl cp`
     path) and create the `apw-web` Secret.
 - Some UI controls (alert sound, Clash panel, updater) render but do
-  nothing, or log a "not available in headless mode" error.
+  nothing, or log a "not available in headless mode" error. (The Clash
+  panel works since `2026-10-14-headless-clash-routes.md`.)
 - No rate limiting on the password; loopback-only exposure is the
   mitigation.
 

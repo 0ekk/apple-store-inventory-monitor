@@ -16,6 +16,7 @@
 
 mod apple_lookup;
 mod camoufox_fetcher;
+mod clash_route;
 mod web;
 
 use std::net::SocketAddr;
@@ -23,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use apw_core::catalog::Catalog;
-use apw_core::config::{OpenOnHit, Settings, SettingsStore, TelegramSettings};
+use apw_core::config::{NetworkMode, OpenOnHit, Settings, SettingsStore, TelegramSettings};
 use apw_core::model::{Target, region_by_locale};
 use apw_core::notify::{Bark, Multi, Notification, Notifier, Telegram};
 use apw_core::watcher::{Event, Watcher, WatcherConfig};
@@ -65,7 +66,7 @@ impl AppState {
     /// the next start all keep seeing the same old settings.
     fn put_settings(&self, next: Settings) -> Result<(), String> {
         self.store.save(&next).map_err(|e| e.to_string())?;
-        self.fetcher.set_proxies(next.network.proxies.clone());
+        self.fetcher.set_network(next.network.clone());
         *self.settings.write().unwrap_or_else(|e| e.into_inner()) = next;
         Ok(())
     }
@@ -288,11 +289,24 @@ async fn main() {
     });
     let fetcher = CamoufoxFetcher::new(sidecar_url.clone())
         .unwrap_or_else(|err| exit_with(format!("failed to build the sidecar client: {err}")));
-    fetcher.set_proxies(settings.network.proxies.clone());
-    println!(
-        "using camoufox sidecar at {sidecar_url}, {} exit proxy(ies) in the random pool",
-        settings.network.proxies.len()
-    );
+    fetcher.set_network(settings.network.clone());
+    if settings.network.mode == NetworkMode::System {
+        println!(
+            "using camoufox sidecar at {sidecar_url}, {} exit proxy(ies) in the random pool",
+            settings.network.proxies.len()
+        );
+    } else {
+        println!(
+            "using camoufox sidecar at {sidecar_url}, Apple queries through the Clash port {} \
+             ({})",
+            clash_route::clash_proxy_address(&settings.network.clash).unwrap_or_else(|err| err),
+            if settings.network.mode == NetworkMode::Pinned {
+                "pinned node"
+            } else {
+                "node rotation"
+            }
+        );
+    }
 
     // The environment's bot is the default: a Secret keeps the token out of
     // settings.v2.json and the web UI. Telegram fields set in the web UI win.
